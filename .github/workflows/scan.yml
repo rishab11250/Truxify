@@ -236,9 +236,20 @@ jobs:
             // Valid extra labels that already exist in the repo
             const validExtraLabels = ['bug', 'enhancement', 'good first issue', 'help wanted'];
 
-            // ── No issues found: auto-close any open ones ─────────────────
+            // ── Build a fingerprint from file + category + severity ────────
+            // Stable across AI title rephrasing
+            const makeFingerprint = (file, category, severity) =>
+              `${file}::${category}::${severity}`.toLowerCase().trim();
+
+            // ── Extract fingerprint from an existing issue body ────────────
+            const extractFingerprint = body => {
+              const m = body.match(/<!--\s*fp:([^>]+)-->/);
+              return m ? m[1].trim() : null;
+            };
+
+            // ── No issues found at all: auto-close everything ─────────────
             if (issueBlocks.length === 0) {
-              console.log('No issues found — closing any open AI issues.');
+              console.log('No issues found — code is clean. Closing all open AI issues.');
               const existing = await github.rest.issues.listForRepo({
                 owner: context.repo.owner,
                 repo:  context.repo.repo,
@@ -251,7 +262,7 @@ jobs:
                   owner: context.repo.owner,
                   repo:  context.repo.repo,
                   issue_number: issue.number,
-                  body: `✅ Fixed and verified clean on \`${commitSha}\`. Closing automatically.\n\n_Scanned by ${provider}_`,
+                  body: `✅ No issues detected in the latest scan on \`${commitSha}\`. Code looks clean — closing automatically.\n\n_Scanned by ${provider}_`,
                 });
                 await github.rest.issues.update({
                   owner: context.repo.owner,
@@ -275,18 +286,21 @@ jobs:
               const sev        = get('severity').toLowerCase();
               const extraRaw   = get('extra_label').toLowerCase();
               const extraLabel = validExtraLabels.includes(extraRaw) ? extraRaw : null;
+              const file       = get('file');
+              const category   = get('category');
               return {
                 title:       get('title'),
                 severity:    sev,
-                category:    get('category'),
-                file:        get('file'),
+                category,
+                file,
                 description: get('description'),
                 suggestion:  get('suggestion'),
                 extraLabel,
+                fingerprint: makeFingerprint(file, category, sev),
               };
             });
 
-            // ── Fetch open AI issues to check for duplicates ──────────────
+            // ── Fetch all open AI issues ───────────────────────────────────
             const openIssues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo:  context.repo.repo,
@@ -294,48 +308,71 @@ jobs:
               labels: 'flutter-ai-analysis',
               per_page: 100,
             });
-            const openTitles = openIssues.data.map(i => i.title.toLowerCase());
 
-            // ── Auto-close issues no longer detected ──────────────────────
-            const newTitles = parsed.map(p => p.title.toLowerCase());
+            // ── Extract fingerprints from open issues ──────────────────────
+            // Each open issue has a hidden <!-- fp:... --> comment in its body
+            const openFingerprints = new Map(); // fingerprint -> issue
+            for (const issue of openIssues.data) {
+              const fp = extractFingerprint(issue.body || '');
+              if (fp) openFingerprints.set(fp, issue);
+            }
 
-            for (const openIssue of openIssues.data) {
-              if (!newTitles.includes(openIssue.title.toLowerCase())) {
-                await github.rest.issues.createComment({
+            // New scan fingerprints
+            const newFingerprints = new Set(parsed.map(p => p.fingerprint));
+
+            // ── Step 1: Flag issues not seen in this scan (don't auto-close)
+            // Only leave a comment so the developer can verify and close manually
+            for (const [fp, openIssue] of openFingerprints) {
+              if (!newFingerprints.has(fp)) {
+                // Check if we already left a "not detected" comment recently
+                // to avoid spamming the same comment on every push
+                const comments = await github.rest.issues.listComments({
                   owner: context.repo.owner,
                   repo:  context.repo.repo,
                   issue_number: openIssue.number,
-                  body: `✅ This issue was not detected in the latest scan on \`${commitSha}\`. Closing automatically.\n\n_Scanned by ${provider}_`,
+                  per_page: 10,
                 });
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo:  context.repo.repo,
-                  issue_number: openIssue.number,
-                  state: 'closed',
-                });
-                console.log(`Auto-closed resolved issue: ${openIssue.title}`);
+                const alreadyFlagged = comments.data.some(c =>
+                  c.body.includes('not detected in the latest scan')
+                );
+                if (!alreadyFlagged) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo:  context.repo.repo,
+                    issue_number: openIssue.number,
+                    body: `⚠️ This issue was **not detected** in the latest scan on \`${commitSha}\`.\n\nPlease verify if the problem is actually fixed and close this issue manually if resolved.\n\n_Scanned by ${provider}_`,
+                  });
+                  console.log(`Flagged for manual review: ${openIssue.title}`);
+                } else {
+                  console.log(`Already flagged, skipping comment: ${openIssue.title}`);
+                }
               }
             }
 
-            // ── Create new issues (skip duplicates) ───────────────────────
+            // ── Step 2: Create new issues, skip if fingerprint already open
             let created = 0;
             let skipped = 0;
 
             for (const issue of parsed) {
-              const emoji      = sevEmoji[issue.severity] || '⚪';
-              const issueTitle = issue.title;
-
-              if (openTitles.includes(issueTitle.toLowerCase())) {
-                console.log(`Skipping duplicate: ${issueTitle}`);
+              // Skip if an open issue with the same fingerprint already exists
+              if (openFingerprints.has(issue.fingerprint)) {
+                console.log(`Skipping — fingerprint already open: ${issue.fingerprint}`);
                 skipped++;
                 continue;
               }
+
+              const emoji      = sevEmoji[issue.severity] || '⚪';
+              const issueTitle = issue.title;
 
               // Base labels + extra label if AI provided a valid one
               const labels = ['flutter-ai-analysis', 'ai-generated', issue.severity];
               if (issue.extraLabel) labels.push(issue.extraLabel);
 
               const body = [
+                // Hidden fingerprint — used for stable matching across scans
+                // DO NOT remove this comment
+                `<!-- fp:${issue.fingerprint} -->`,
+                ``,
                 `## ${emoji} ${issue.title}`,
                 ``,
                 `> ⚠️ AI-generated suggestion — verify before acting.`,
@@ -362,7 +399,7 @@ jobs:
                 `---`,
                 ``,
                 `### ✅ How to close this`,
-                `Fix the problem above, push to main, and this issue will be **auto-closed** by the next scan if the problem is gone.`,
+                `Fix the problem above and push to main. The next scan will flag this issue for manual review if it no longer detects the problem. You can then close it manually.`,
                 ``,
                 `_Generated: ${new Date().toUTCString()}_`,
               ].join('\n');
@@ -376,10 +413,10 @@ jobs:
               });
 
               created++;
-              console.log(`Created: ${issueTitle} [labels: ${labels.join(', ')}]`);
+              console.log(`Created: ${issueTitle} [fp: ${issue.fingerprint}] [labels: ${labels.join(', ')}]`);
 
               // Respect GitHub API rate limit
               await new Promise(r => setTimeout(r, 500));
             }
 
-            console.log(`Done — Created: ${created}, Skipped (duplicates): ${skipped}`);
+            console.log(`Done — Created: ${created}, Skipped (already open): ${skipped}`);
