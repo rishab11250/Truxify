@@ -19,8 +19,12 @@ const app = express();
 const server = http.createServer(app);
 
 // Enable CORS for frontend clients (Flutter Web, mobile, etc.)
+const corsOrigins = process.env.NODE_ENV === 'production'
+  ? (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean)
+  : '*';
+
 app.use(cors({
-  origin: '*', // Allow all origins for development; tighten in production
+  origin: corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-user-role', 'x-user-name']
 }));
