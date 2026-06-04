@@ -1,0 +1,104 @@
+{
+  "programSignals": [
+    "gssoc",
+    "gssoc 2026",
+    "gssoc'26",
+    "gssoc26",
+    "nsoc",
+    "nsoc26"
+  ],
+  "programLabels": [
+    "gssoc:approved"
+  ],
+  "inheritLabels": [
+    "gssoc:approved",
+    "level:beginner",
+    "level:intermediate",
+    "level:advanced",
+    "level:critical",
+    "quality:clean",
+    "quality:exceptional",
+    "type:accessibility",
+    "type:api",
+    "type:bug",
+    "type:design",
+    "type:feature",
+    "type:refactor",
+    "type:security",
+    "type:testing",
+    "customer-app",
+    "driver-app",
+    "backend",
+    "blockchain",
+    "ml",
+    "automation",
+    "documentation",
+    "dependencies",
+    "nsoc",
+    "nsoc26"
+  ],
+  "titleRules": [
+    {
+      "pattern": "^(fix|bug|hotfix|security)",
+      "labels": ["type:bug"]
+    },
+    {
+      "pattern": "^(feat|feature)",
+      "labels": ["type:feature"]
+    },
+    {
+      "pattern": "^refactor",
+      "labels": ["type:refactor"]
+    },
+    {
+      "pattern": "^(test|tests)",
+      "labels": ["type:testing"]
+    },
+    {
+      "pattern": "^(docs|doc|documentation)",
+      "labels": ["documentation"]
+    },
+    {
+      "pattern": "(xss|csrf|ssrf|auth|vulnerability|security|secret|token)",
+      "labels": ["type:security"]
+    }
+  ],
+  "pathRules": [
+    {
+      "pattern": "^apps/customer/",
+      "labels": ["customer-app", "flutter"]
+    },
+    {
+      "pattern": "^apps/driver/",
+      "labels": ["driver-app", "flutter"]
+    },
+    {
+      "pattern": "^backend/api/",
+      "labels": ["backend", "type:api"]
+    },
+    {
+      "pattern": "^backend/ml/",
+      "labels": ["ml"]
+    },
+    {
+      "pattern": "^blockchain/",
+      "labels": ["blockchain"]
+    },
+    {
+      "pattern": "^automation/",
+      "labels": ["automation"]
+    },
+    {
+      "pattern": "(^docs/|README|CONTRIBUTING|\\.md$)",
+      "labels": ["documentation"]
+    },
+    {
+      "pattern": "(^test/|/test/|\\.test\\.|_test\\.)",
+      "labels": ["type:testing"]
+    },
+    {
+      "pattern": "(package-lock\\.json|pubspec\\.lock|dependabot\\.yml)",
+      "labels": ["dependencies"]
+    }
+  ]
+}
