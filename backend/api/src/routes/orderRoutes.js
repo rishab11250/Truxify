@@ -541,5 +541,87 @@ router.post('/:id/bids/:bidId/accept', authenticate, requireRole(['customer']), 
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+// ============================================================================
+// 7. UPDATE ORDER MILESTONE (ASSIGNED DRIVER)
+// ============================================================================
+router.put('/:id/milestones', authenticate, requireRole(['driver']), async (req, res) => {
+  const orderId = req.params.id;
+  const { milestone } = req.body;
+
+  const milestoneMap = {
+    'En Route to Pickup': 'truck_assigned',
+    'Goods Loaded': 'picked_up',
+    'In Transit': 'in_transit',
+    'Delivered': 'delivered',
+  };
+
+  if (!milestone || !milestoneMap[milestone]) {
+    return res.status(400).json({
+      error: 'Invalid milestone supplied.'
+    });
+  }
+
+  try {
+    const { data: order } = await supabase
+      .from('orders')
+      .select('driver_id, order_display_id')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (!order) {
+      return res.status(404).json({
+        error: 'Order not found.'
+      });
+    }
+
+    if (order.driver_id !== req.user.id) {
+      return res.status(403).json({
+        error: 'Access Denied: You are not assigned to this order.'
+      });
+    }
+
+    const status = milestoneMap[milestone];
+
+    const { error: orderErr } = await supabase
+  .from('orders')
+  .update({
+    status,
+    updated_at: new Date().toISOString()
+  })
+  .eq('id', orderId);
+
+if (orderErr) {
+  return res.status(500).json({
+    error: orderErr.message
+  });
+}
+
+const { error: timelineErr } = await supabase
+  .from('order_timeline')
+  .update({
+    completed: true,
+    milestone_time: new Date().toISOString()
+  })
+  .eq('order_display_id', order.order_display_id)
+  .eq('milestone', milestone);
+
+if (timelineErr) {
+  return res.status(500).json({
+    error: timelineErr.message
+  });
+}
+
+    return res.status(200).json({
+      message: 'Milestone updated successfully.',
+      milestone,
+      status
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Internal Server Error'
+    });
+  }
+});
 
 export default router;

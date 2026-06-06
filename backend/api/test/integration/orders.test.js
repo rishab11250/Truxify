@@ -233,6 +233,57 @@ describe('POST /api/orders — server-side pricing contract', () => {
     expect(orderInsert.platform_fee).not.toBe(99999);
     expect(orderInsert.total_amount).not.toBe(99999);
   });
+  it('driver can update milestone when assigned to order', async () => {
+    m.store.orders = [{
+      id: 'order-1',
+      driver_id: 'driver-123',
+      order_display_id: 'ORD001',
+      status: 'truck_assigned'
+    }];
+
+    m.store.order_timeline = [{
+      order_display_id: 'ORD001',
+      milestone: 'Goods Loaded',
+      completed: false
+    }];
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .put('/api/orders/order-1/milestones')
+      .set({
+        'x-user-id': 'driver-123',
+        'x-user-role': 'driver'
+      })
+      .send({
+        milestone: 'Goods Loaded'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toMatch(/Milestone updated successfully/i);
+  });
+
+  it('returns 403 when driver is not assigned to order', async () => {
+    m.store.orders = [{
+      id: 'order-1',
+      driver_id: 'driver-999',
+      order_display_id: 'ORD001'
+    }];
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .put('/api/orders/order-1/milestones')
+      .set({
+        'x-user-id': 'driver-123',
+        'x-user-role': 'driver'
+      })
+      .send({
+        milestone: 'Goods Loaded'
+      });
+
+    expect(res.status).toBe(403);
+  });
 });
 
 describe('POST /api/orders/:id/bids — duplicate bid prevention', () => {
