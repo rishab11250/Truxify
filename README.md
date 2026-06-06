@@ -267,6 +267,25 @@ flutter pub get
 flutter run
 ```
 
+### Run the Backend With Docker
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+The Compose stack overrides the cloud MongoDB and Redis placeholders from
+`.env` inside the API container:
+
+```env
+MONGODB_URI=mongodb://mongo:27017
+MONGODB_DB_NAME=truxify_telemetry
+REDIS_URL=redis://redis:6379
+```
+
+This lets the backend use the local `mongo` and `redis` services without
+editing `.env` away from production-style values.
+
 ---
 
 ## 📊 Impact Metrics (Projected)
