@@ -454,4 +454,3 @@ git push origin feature/your-feature-name
 [Report Bug](https://github.com/KanishJebaMathewM/Truxify/issues) · [Request Feature](https://github.com/KanishJebaMathewM/Truxify/issues)
 
 </div>
-<!-- test comment for PR welcome and merge automation -->
