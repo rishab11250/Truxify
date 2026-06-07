@@ -1,16 +1,35 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'supabase_service.dart';
 
 class OrderService {
-  OrderService({SupabaseClient? client}) : _providedClient = client;
+  OrderService({
+    SupabaseClient? client,
+    http.Client? httpClient,
+    String? apiBaseUrl,
+  })  : _providedClient = client,
+        _httpClient = httpClient ?? http.Client(),
+        _apiBaseUrl = _normalizeBaseUrl(apiBaseUrl ?? defaultApiBaseUrl);
+
+  static const String defaultApiBaseUrl = String.fromEnvironment(
+    'TRUXIFY_API_BASE_URL',
+    defaultValue: 'http://localhost:5000',
+  );
 
   final SupabaseClient? _providedClient;
+  final http.Client _httpClient;
+  final String _apiBaseUrl;
 
   SupabaseClient get _client => _providedClient ?? Supabase.instance.client;
 
-  Future<void> createOrder({
-    required String orderDisplayId,
+  static String _normalizeBaseUrl(String value) {
+    return value.endsWith('/') ? value.substring(0, value.length - 1) : value;
+  }
+
+  Future<String> createOrder({
     required String pickupAddress,
     required String dropAddress,
     required double pickupLat,
@@ -20,29 +39,50 @@ class OrderService {
     required String pickupTime,
     required String goodsType,
     required double weightTonnes,
-    required String truckId,
-    required String driverId,
-    required double totalAmount,
+    String? paymentMethodId,
+    String? upiId,
   }) async {
-    await _client.from('orders').insert({
-      'order_display_id': orderDisplayId,
-      'customer_id': SupabaseService.requireUserId(),
-      'driver_id': driverId,
-      'truck_id': truckId,
-      'status': 'pending',
-      'pickup_address': pickupAddress,
-      'pickup_lat': pickupLat,
-      'pickup_lng': pickupLng,
-      'drop_address': dropAddress,
-      'drop_lat': dropLat,
-      'drop_lng': dropLng,
-      'pickup_date': DateTime.now().toIso8601String(),
-      'pickup_time': pickupTime,
-      'goods_type': goodsType,
-      'weight_tonnes': weightTonnes,
-      'total_amount': (totalAmount * 100).toInt(),
-      'eta': 'TBD',
-    });
+    final user = SupabaseService.currentUser;
+    final userId = SupabaseService.requireUserId();
+    final token = _client.auth.currentSession?.accessToken;
+    final fullName = user?.userMetadata?['full_name']?.toString();
+
+    final response = await _httpClient.post(
+      Uri.parse('$_apiBaseUrl/api/orders'),
+      headers: <String, String>{
+        'Content-Type': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+        'x-user-id': userId,
+        'x-user-role': 'customer',
+        if (fullName != null && fullName.isNotEmpty) 'x-user-name': fullName,
+      },
+      body: jsonEncode(<String, dynamic>{
+        'pickup_address': pickupAddress,
+        'pickup_lat': pickupLat,
+        'pickup_lng': pickupLng,
+        'drop_address': dropAddress,
+        'drop_lat': dropLat,
+        'drop_lng': dropLng,
+        'pickup_date': DateTime.now().toIso8601String(),
+        'pickup_time': pickupTime,
+        'goods_type': goodsType,
+        'weight_tonnes': weightTonnes,
+        'payment_method_id': paymentMethodId,
+        'upi_id': upiId,
+      }),
+    );
+
+    final body = response.body.isNotEmpty
+        ? jsonDecode(response.body) as Map<String, dynamic>
+        : <String, dynamic>{};
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError(
+        body['error']?.toString() ?? 'Failed to create order via backend API.',
+      );
+    }
+
+    return body['order']?['order_display_id']?.toString() ?? '';
   }
 
   Future<Map<String, dynamic>?> fetchOrderById(String orderDisplayId) async {
