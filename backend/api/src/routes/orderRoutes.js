@@ -595,7 +595,7 @@ router.put('/:id/milestones', authenticate, requireRole(['driver']), async (req,
 
   const milestoneMap = {
     'Truck Assigned': 'truck_assigned',
-    'En Route to Pickup': 'picked_up',
+    'En Route to Pickup': 'truck_assigned',
     'Goods Loaded': 'picked_up',
     'In Transit': 'in_transit',
     'Arriving': 'arriving',
