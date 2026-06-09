@@ -33,41 +33,41 @@ class AppCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cardColor = color ?? Theme.of(context).colorScheme.surface;
-    final card = Material(
-      color: Colors.transparent,
-      child: Container(
-        margin: margin,
-        decoration: BoxDecoration(
-          color: cardColor,
-          borderRadius: BorderRadius.circular(14),
-          border: border ??
-              Border.all(
-                  color: color == null
-                      ? _borderColor(context)
-                      : Colors.transparent),
-          boxShadow: elevation > 0
-              ? [
-                  BoxShadow(
-                      color: TruxifyColors.accent.withValues(alpha: 0.06),
-                      blurRadius: math.max(2, elevation),
-                      offset: const Offset(0, 2))
-                ]
-              : null,
-        ),
-        child: Padding(padding: padding, child: child),
-      ),
-    );
-
-    if (onTap == null) {
-      return card;
+    
+    Widget content = Padding(padding: padding, child: child);
+    
+    if (onTap != null) {
+      content = InkWell(
+        onTap: onTap,
+        child: content,
+      );
     }
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: card,
+    return Container(
+      margin: margin,
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: border ??
+            Border.all(
+                color: color == null
+                    ? _borderColor(context)
+                    : Colors.transparent),
+        boxShadow: elevation > 0
+            ? [
+                BoxShadow(
+                    color: TruxifyColors.accent.withValues(alpha: 0.06),
+                    blurRadius: math.max(2, elevation),
+                    offset: const Offset(0, 2))
+              ]
+            : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Material(
+          color: Colors.transparent,
+          child: content,
+        ),
       ),
     );
   }
