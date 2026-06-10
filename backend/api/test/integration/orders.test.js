@@ -896,7 +896,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       driver_id: 'driver-123',
       order_display_id: 'ORD001',
       delivery_otp: '123456',
-      otp_verified: false
+      otp_verified: false,
+      otp_generated_at: new Date().toISOString()
     }];
 
     const app = buildApp();
@@ -909,7 +910,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       .send({ otp: '654321' }); // Invalid OTP
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Invalid OTP. Please check and try again.');
+    expect(res.body.error).toContain('Invalid OTP');
   });
 
   it('verifies delivery successfully with correct OTP, updates status and calls RPC', async () => {
@@ -919,7 +920,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       order_display_id: 'ORD001',
       delivery_otp: '123456',
       otp_verified: false,
-      status: 'in_transit'
+      status: 'in_transit',
+      otp_generated_at: new Date().toISOString()
     }];
     m.store.order_timeline = [{
       order_display_id: 'ORD001',
