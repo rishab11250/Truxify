@@ -482,9 +482,6 @@ class _TripsScreenState extends State<TripsScreen> {
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                           color: Theme.of(context).colorScheme.onSurface,
-                          color: isDark
-                              ? TruxifyColors.accent
-                              : TruxifyColors.primaryText,
                         ),
                       ),
                       const SizedBox(width: 10),
