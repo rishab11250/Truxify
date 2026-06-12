@@ -414,37 +414,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         .subscribe();
   }
 
-  LatLng _pointAlongRoute(double t) {
-    final points = _routePoints;
-    if (points.length < 2) {
-      return _interpolatePoint(
-        _fallbackPickupPoint,
-        _fallbackDropPoint,
-        t,
-      );
-    }
-
-    final clampedT = t.clamp(0.0, 1.0);
-    final totalSegments = points.length - 1;
-    final scaled = clampedT * totalSegments;
-    final segmentIndex = scaled.floor().clamp(0, totalSegments - 1);
-    final localT = scaled - segmentIndex;
-
-    if (segmentIndex >= totalSegments) {
-      return points.last;
-    }
-
-    return _interpolatePoint(
-        points[segmentIndex], points[segmentIndex + 1], localT);
-  }
-
-  LatLng _interpolatePoint(LatLng start, LatLng end, double t) {
-    return LatLng(
-      start.latitude + ((end.latitude - start.latitude) * t),
-      start.longitude + ((end.longitude - start.longitude) * t),
-    );
-  }
-
   List<Marker> _buildTruckMarkers() {
     if (_currentPosition == null) {
       return const [];
