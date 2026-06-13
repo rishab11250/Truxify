@@ -9,6 +9,7 @@ const trackingSubscriptions = new Map();
 // EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
 // =====================================================================
 let telemetryWriteBuffer = [];
+const MAX_BUFFER_SIZE = 10000;
 const BUFFER_FLUSH_INTERVAL_MS = 20000; 
 let isSchedulerActive = false;
 let telemetryFlushInterval = null;
@@ -329,6 +330,11 @@ export async function handleLocationPing(ws, data) {
   }
 
   // 🛡️ 2. WRITE-BUFFER DEFERMENT (BATCHING)
+  if (telemetryWriteBuffer.length >= MAX_BUFFER_SIZE) {
+    console.warn(`[TRUXIFY BATCH CONTROL] Telemetry buffer limit reached (${MAX_BUFFER_SIZE}). Dropping oldest telemetry record to prevent memory exhaustion.`);
+    telemetryWriteBuffer.shift();
+  }
+
   telemetryWriteBuffer.push({
     driver_id,
     order_display_id: order_display_id || null,

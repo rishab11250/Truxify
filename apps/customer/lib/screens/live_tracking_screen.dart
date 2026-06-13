@@ -22,8 +22,7 @@ class LiveTrackingScreen extends StatefulWidget {
 }
 
 class _LiveTrackingScreenState extends State<LiveTrackingScreen>
-    with TickerProviderStateMixin {
-  late final AnimationController _truckController;
+    with SingleTickerProviderStateMixin {
   late final AnimationController _movementController;
   late final OrderService _orderService;
   List<Map<String, dynamic>> _timeline = [];
@@ -41,9 +40,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     super.initState();
 
     _orderService = OrderService();
-    _truckController =
-        AnimationController(vsync: this, duration: const Duration(seconds: 9))
-          ..repeat();
     _movementController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
@@ -57,7 +53,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
 
   @override
   void dispose() {
-    _truckController.dispose();
     _movementController.dispose();
     _ordersChannel?.unsubscribe();
     _trackingSubscription?.cancel();
@@ -66,9 +61,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   }
 
   void _subscribeToTracking() {
-    final session = Supabase.instance.client.auth.currentSession;
-    final token = session?.accessToken ?? '';
-
     final apiBaseUrl = OrderService.defaultApiBaseUrl;
     final baseUri = Uri.parse(apiBaseUrl);
     final wsScheme = baseUri.scheme == 'https' ? 'wss' : 'ws';
@@ -79,20 +71,27 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     }
     wsPath = '$wsPath/ws/tracking';
 
-    final wsUri = Uri(
-      scheme: wsScheme,
-      host: baseUri.host,
-      port: baseUri.hasPort ? baseUri.port : null,
-      path: wsPath,
-      queryParameters: token.isNotEmpty ? {'token': token} : null,
-    );
-    final wsUrl = wsUri.toString();
+    String buildUrl() {
+      final session = Supabase.instance.client.auth.currentSession;
+      final token = session?.accessToken ?? '';
+      final wsUri = Uri(
+        scheme: wsScheme,
+        host: baseUri.host,
+        port: baseUri.hasPort ? baseUri.port : null,
+        path: wsPath,
+        queryParameters: token.isNotEmpty ? {'token': token} : null,
+      );
+      return wsUri.toString();
+    }
 
-    final redactedUrl = wsUri.replace(queryParameters: token.isNotEmpty ? {'token': '[REDACTED]'} : null).toString();
+    final initialWsUrl = buildUrl();
+    final initialUri = Uri.parse(initialWsUrl);
+    final redactedUrl = initialUri.replace(queryParameters: initialUri.queryParameters.containsKey('token') ? {'token': '[REDACTED]'} : null).toString();
     debugPrint('Connecting to tracking WebSocket at: $redactedUrl');
 
     _trackingWebSocket = ResilientWebSocket(
-      wsUrl,
+      initialWsUrl,
+      urlFactory: buildUrl,
       onConnect: () {
         debugPrint('WebSocket connected, subscribing to order updates...');
         _trackingWebSocket?.send({
@@ -140,7 +139,17 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     }
 
     setState(() {
-      _previousPosition = _currentPosition;
+      if (_previousPosition != null && _movementController.isAnimating) {
+        final t = _movementController.value;
+        _previousPosition = LatLng(
+          _previousPosition!.latitude +
+              (_currentPosition!.latitude - _previousPosition!.latitude) * t,
+          _previousPosition!.longitude +
+              (_currentPosition!.longitude - _previousPosition!.longitude) * t,
+        );
+      } else {
+        _previousPosition = _currentPosition;
+      }
       _currentPosition = newPosition;
     });
     _movementController.forward(from: 0.0);
@@ -501,7 +510,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         children: [
           Positioned.fill(
             child: AnimatedBuilder(
-              animation: Listenable.merge([_truckController, _movementController]),
+              animation: _movementController,
               builder: (context, child) {
                 return FlutterMap(
                   options: const MapOptions(
