@@ -1031,7 +1031,7 @@ describe('handleLocationPing - broadcast to order subscribers', () => {
       __testing.clearTelemetryWriteBuffer();
     });
 
-    it('enforces MAX_BUFFER_SIZE by shifting the oldest telemetry records', async () => {
+    it('enforces MAX_BUFFER_SIZE by dropping 10% of the oldest telemetry records', async () => {
       const mockRecords = Array.from({ length: 10000 }, (_, i) => ({ driver_id: `driver-old-${i}` }));
       __testing.setTelemetryWriteBuffer(mockRecords);
 
@@ -1045,11 +1045,11 @@ describe('handleLocationPing - broadcast to order subscribers', () => {
       });
 
       const buffer = __testing.getTelemetryWriteBuffer();
-      expect(buffer.length).toBe(10000);
-      expect(buffer[0].driver_id).toBe('driver-old-1'); // oldest record (driver-old-0) shifted out
-      expect(buffer[9999].driver_id).toBe('driver-new'); // new record added at the end
+      expect(buffer.length).toBe(9501);
+      expect(buffer[0].driver_id).toBe('driver-old-500');
+      expect(buffer[9500].driver_id).toBe('driver-new');
       expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Telemetry buffer limit reached')
+        expect.stringContaining('[TRUXIFY BUFFER WARN] Telemetry buffer full')
       );
 
       consoleWarnSpy.mockRestore();

@@ -8,13 +8,18 @@ const trackingSubscriptions = new Map();
 // =====================================================================
 // EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
 // =====================================================================
+const MAX_BUFFER_SIZE = 5000;
+const BUFFER_WARN_THRESHOLD = 0.5;
+const BUFFER_CRIT_THRESHOLD = 0.8;
+const BUFFER_MONITOR_INTERVAL_MS = 30000;
 let telemetryWriteBuffer = [];
-const MAX_BUFFER_SIZE = 10000;
-const BUFFER_FLUSH_INTERVAL_MS = 20000; 
+const BUFFER_FLUSH_INTERVAL_MS = 20000;
+let flushBackoffMs = 1000;
 let isSchedulerActive = false;
 let telemetryFlushInterval = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
+let telemetryMonitorInterval = null;
 
 const WS_UPGRADE_RATE_LIMIT = 5;
 const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
@@ -329,12 +334,12 @@ export async function handleLocationPing(ws, data) {
     }
   }
 
-  // 🛡️ 2. WRITE-BUFFER DEFERMENT (BATCHING)
+  // Buffer write with capacity limit
   if (telemetryWriteBuffer.length >= MAX_BUFFER_SIZE) {
-    console.warn(`[TRUXIFY BATCH CONTROL] Telemetry buffer limit reached (${MAX_BUFFER_SIZE}). Dropping oldest telemetry record to prevent memory exhaustion.`);
-    telemetryWriteBuffer.shift();
+    const dropCount = Math.floor(MAX_BUFFER_SIZE * 0.1);
+    telemetryWriteBuffer.splice(0, dropCount);
+    console.warn(`[TRUXIFY BUFFER WARN] Telemetry buffer full: dropped ${dropCount} oldest records. Size: ${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE}`);
   }
-
   telemetryWriteBuffer.push({
     driver_id,
     order_display_id: order_display_id || null,
@@ -347,6 +352,14 @@ export async function handleLocationPing(ws, data) {
     pinged_at: currentPingTime,
     buffered_at: new Date()
   });
+
+  // Buffer usage monitoring
+  const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
+  if (usagePct >= 80) {
+    console.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
+  } else if (usagePct >= 50 && usagePct < 60) {
+    console.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
+  }
 
   if (redisClient) {
     try {
@@ -398,7 +411,10 @@ export async function handleLocationPing(ws, data) {
  * Periodically dumps the aggregated batch matrix logs into MongoDB Atlas
  */
 async function flushTelemetryBuffer() {
-  if (telemetryWriteBuffer.length === 0) return;
+  if (telemetryWriteBuffer.length === 0) {
+    flushBackoffMs = 1000;
+    return;
+  }
 
   // 🛡️ ADJUSTMENT 1: Move database client check to the absolute top to avoid buffer data loss
   if (!mongoDb) {
@@ -416,8 +432,9 @@ async function flushTelemetryBuffer() {
     const collection = mongoDb.collection('live_gps_pings');
     await collection.insertMany(recordsToFlush, { ordered: false });
     console.log(`[TRUXIFY DB SUCCESS] Successfully flushed ${recordsToFlush.length} records to MongoDB clusters.`);
+    flushBackoffMs = 1000;
   } catch (err) {
-    console.error('Mongo bulk insert telemetry logs error:', err.message);
+    console.error(`[TRUXIFY RETRY LOGIC] Bulk insert failed (backoff: ${flushBackoffMs}ms):`, err.message);
 
     // 🛡️ ADJUSTMENT 3: Refined Retry Strategy to prevent memory bloat
     // Check if the error code/message relates to a persistent schema validation breakdown or structural malformation
@@ -427,10 +444,33 @@ async function flushTelemetryBuffer() {
       console.error(`[TRUXIFY FATAL DATA DROP] Discarding malformed tracking block payloads to prevent infinite loop memory bloat.`);
       // Do NOT re-queue these records since they will fail indefinitely and consume stack space
     } else {
-      console.warn(`[TRUXIFY RETRY LOGIC] Transient cluster error detected. Re-injecting ${recordsToFlush.length} frames back to buffer pool.`);
-      // Re-insert frames back into execution pools for transient timeouts/network issues
-      telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
+      // Exponential backoff with 60s cap
+      flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
+
+      // Capacity-aware re-queue: only keep as many as there's space for
+      const spaceAvailable = Math.max(0, MAX_BUFFER_SIZE - telemetryWriteBuffer.length);
+      const recordsToKeep = recordsToFlush.slice(-spaceAvailable);
+      const droppedCount = recordsToFlush.length - recordsToKeep.length;
+      if (droppedCount > 0) {
+        console.warn(`[TRUXIFY BUFFER DROP] Buffer full: dropped ${droppedCount} oldest records from retry batch.`);
+      }
+      telemetryWriteBuffer = [...telemetryWriteBuffer, ...recordsToKeep];
     }
+  }
+}
+
+function monitorBufferSize() {
+  const usagePct = telemetryWriteBuffer.length / MAX_BUFFER_SIZE;
+  if (usagePct >= BUFFER_CRIT_THRESHOLD) {
+    console.warn(
+      `[TRUXIFY BUFFER MONITOR] CRITICAL: Buffer at ${(usagePct * 100).toFixed(0)}% ` +
+      `(${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`
+    );
+  } else if (usagePct >= BUFFER_WARN_THRESHOLD) {
+    console.warn(
+      `[TRUXIFY BUFFER MONITOR] WARNING: Buffer at ${(usagePct * 100).toFixed(0)}% ` +
+      `(${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`
+    );
   }
 }
 
@@ -438,7 +478,10 @@ function initTelemetryScheduler() {
   isSchedulerActive = true;
   telemetryFlushInterval = setInterval(async () => {
     await flushTelemetryBuffer();
-  }, BUFFER_FLUSH_INTERVAL_MS);
+  }, Math.max(BUFFER_FLUSH_INTERVAL_MS, flushBackoffMs));
+  telemetryMonitorInterval = setInterval(() => {
+    monitorBufferSize();
+  }, BUFFER_MONITOR_INTERVAL_MS);
 }
 
 export async function closeWebSocketServer() {
@@ -446,6 +489,11 @@ export async function closeWebSocketServer() {
     clearInterval(telemetryFlushInterval);
     telemetryFlushInterval = null;
     isSchedulerActive = false;
+  }
+
+  if (telemetryMonitorInterval) {
+    clearInterval(telemetryMonitorInterval);
+    telemetryMonitorInterval = null;
   }
 
   if (wsHeartbeatInterval) {
