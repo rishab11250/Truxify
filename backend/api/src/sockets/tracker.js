@@ -438,15 +438,12 @@ async function flushTelemetryBuffer() {
     return;
   }
 
-  // 🛡️ ADJUSTMENT 1: Move database client check to the absolute top to avoid buffer data loss
   if (!mongoDb) {
     console.error('[TRUXIFY STORAGE WARN] MongoDB is not initialized or disconnected. Retaining telemetry logs in memory buffer.');
-    return; // Fast return without clearing the active local telemetryWriteBuffer
+    return;
   }
 
-  // Now it's perfectly safe to slice and isolate the buffer arrays
   const recordsToFlush = [...telemetryWriteBuffer];
-  telemetryWriteBuffer = [];
 
   console.log(`[TRUXIFY BATCH CONTROL] Committing bulk cluster of ${recordsToFlush.length} spatial rows to MongoDB...`);
 
@@ -454,22 +451,19 @@ async function flushTelemetryBuffer() {
     const collection = mongoDb.collection('live_gps_pings');
     await collection.insertMany(recordsToFlush, { ordered: false });
     console.log(`[TRUXIFY DB SUCCESS] Successfully flushed ${recordsToFlush.length} records to MongoDB clusters.`);
+    telemetryWriteBuffer = telemetryWriteBuffer.slice(recordsToFlush.length);
     flushBackoffMs = 1000;
   } catch (err) {
     console.error(`[TRUXIFY RETRY LOGIC] Bulk insert failed (backoff: ${flushBackoffMs}ms):`, err.message);
 
-    // 🛡️ ADJUSTMENT 3: Refined Retry Strategy to prevent memory bloat
-    // Check if the error code/message relates to a persistent schema validation breakdown or structural malformation
     const isValidationError = err.code === 121 || err.message.includes('Document failed validation');
 
     if (isValidationError) {
       console.error(`[TRUXIFY FATAL DATA DROP] Discarding malformed tracking block payloads to prevent infinite loop memory bloat.`);
-      // Do NOT re-queue these records since they will fail indefinitely and consume stack space
+      telemetryWriteBuffer = telemetryWriteBuffer.slice(recordsToFlush.length);
     } else {
-      // Exponential backoff with 60s cap
       flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
 
-      // Capacity-aware re-queue: only keep as many as there's space for
       const spaceAvailable = Math.max(0, MAX_BUFFER_SIZE - telemetryWriteBuffer.length);
       const recordsToKeep = recordsToFlush.slice(-spaceAvailable);
       const droppedCount = recordsToFlush.length - recordsToKeep.length;
@@ -532,6 +526,18 @@ export async function closeWebSocketServer() {
   if (wsHeartbeatInterval) {
     clearInterval(wsHeartbeatInterval);
     wsHeartbeatInterval = null;
+  }
+
+  // Wait for MongoDB to be available before final flush
+  const mongoMaxWaitMs = 10000;
+  const mongoPollIntervalMs = 500;
+  const mongoWaitStart = Date.now();
+  while (!mongoDb && Date.now() - mongoWaitStart < mongoMaxWaitMs) {
+    await new Promise(r => setTimeout(r, mongoPollIntervalMs));
+  }
+  if (!mongoDb) {
+    const dataLoss = telemetryWriteBuffer.length;
+    console.warn(`[TRUXIFY SHUTDOWN] MongoDB not available after waiting. ${dataLoss} telemetry records will be lost.`);
   }
 
   try {
