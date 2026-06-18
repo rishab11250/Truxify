@@ -63,7 +63,9 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   @override
   void dispose() {
     _movementController.dispose();
-    _ordersChannel?.unsubscribe();
+    if (_ordersChannel != null) {
+      Supabase.instance.client.removeChannel(_ordersChannel!);
+    }
     _trackingSubscription?.cancel();
     _trackingWebSocket?.close();
     super.dispose();
