@@ -167,6 +167,13 @@ Backend resolves user profile via firebase_uid
 - Ensure `minSdk` is set to 23 or higher
 - Run `flutter clean && flutter pub get` and rebuild
 
+### "Failed to initialize reCAPTCHA Enterprise config. Triggering the reCAPTCHA v2 verification."
+- **Why it happens**: This is a standard fallback warning printed by the Firebase Auth SDK when reCAPTCHA Enterprise is not set up in the Firebase project settings.
+- **How to resolve**:
+  1. **For Development**: Use **test phone numbers** (configured in Firebase Console -> Authentication -> Settings -> User Actions -> Test Phone Numbers). Test phone numbers bypass all reCAPTCHA/app verification checks completely.
+  2. **For Production**: Enable the **Play Integrity API** (Android) or configure **reCAPTCHA Enterprise** in your Google Cloud / Firebase Console. Registering your debug and release SHA-256 fingerprints in the Firebase Console is also required for silent device verification.
+
+
 ## 9. iOS Setup (Future)
 
 iOS support requires additional configuration:
