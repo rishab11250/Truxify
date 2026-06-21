@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import '../core/api_client.dart';
+import 'supabase_service.dart';
 
 class ProfileService {
   ProfileService({
@@ -25,16 +26,27 @@ class ProfileService {
   }
 
   Future<void> logout() async {
-    try {
-      // Notify backend to invalidate server-side sessions/cache.
-      await _apiClient.post('/api/auth/logout');
-    } catch (e) {
-      // Log error but proceed to sign out locally.
-      // ignore: avoid_print
-      print('Backend logout failed: $e');
-    } finally {
-      // Sign out from Firebase.
-      await FirebaseAuth.instance.signOut();
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? SupabaseService.client.auth.currentUser?.id;
+
+    if (userId != null) {
+      try {
+        await _apiClient.post(
+          '/api/auth/logout',
+          headers: <String, String>{
+            'x-user-id': userId,
+            'x-user-role': 'customer',
+          },
+        );
+      } catch (e) {
+        // ignore: avoid_print
+        print('Backend logout failed: $e');
+      }
     }
+
+    // Sign out from local clients
+    await Future.wait([
+      FirebaseAuth.instance.signOut(),
+      SupabaseService.client.auth.signOut(),
+    ]);
   }
 }

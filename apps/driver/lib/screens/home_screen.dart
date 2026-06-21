@@ -15,12 +15,16 @@ import 'package:truxify_driver/widgets/slide_to_confirm_button.dart';
 import '../core/app_routes.dart';
 import '../data/mock_data.dart';
 import '../models/app_models.dart';
+import '../models/earnings_daily_model.dart';
+import '../services/driver_earnings_service.dart';
 import '../services/geocode_service.dart';
 import '../services/marketplace_repository.dart';
 import '../services/route_service.dart';
 import '../services/trip_service.dart';
+import '../services/location_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/earnings_shimmer.dart';
 import '../widgets/map_markers.dart';
 import 'destination_picker_screen.dart';
 import '../widgets/pulsing_location_dot.dart';
@@ -29,10 +33,13 @@ class HomeScreen extends StatefulWidget {
   HomeScreen({
     super.key,
     MarketplaceRepository? marketplaceRepo,
+    DriverEarningsService? earningsService,
     this.mockLocationText,
-  }) : marketplaceRepo = marketplaceRepo ?? MarketplaceRepository();
+  }) : marketplaceRepo = marketplaceRepo ?? MarketplaceRepository(),
+       earningsService = earningsService ?? DriverEarningsService();
 
   final MarketplaceRepository marketplaceRepo;
+  final DriverEarningsService earningsService;
   final String? mockLocationText;
 
   @override
@@ -68,15 +75,23 @@ class _HomeScreenState extends State<HomeScreen> {
   LoadOffer? _latestNewLoad;
   bool _dismissedNewLoad = false;
 
+  late final DriverEarningsService _earningsService;
+  EarningsDailyModel? _todayEarnings;
+  double? _driverRating;
+  bool _isLoadingMetrics = true;
+  String? _metricsError;
+
   @override
   void initState() {
     super.initState();
+    _earningsService = widget.earningsService;
     _marketplaceRepo = widget.marketplaceRepo;
     if (widget.mockLocationText != null) {
       _currentLocationText = widget.mockLocationText;
     }
     _initLocation();
     _subscribeToNewLoads();
+    _loadDashboardMetrics();
   }
 
   @override
@@ -145,6 +160,36 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _loadDashboardMetrics() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoadingMetrics = true;
+      _metricsError = null;
+    });
+
+    try {
+      final results = await Future.wait([
+        _earningsService.fetchTodayEarningsSummary(),
+        _earningsService.fetchDriverStats(),
+      ]);
+
+      if (!mounted) return;
+
+      setState(() {
+        _todayEarnings = results[0] as EarningsDailyModel?;
+        final stats = results[1] as Map<String, dynamic>;
+        _driverRating = (stats['rating'] as num?)?.toDouble();
+        _isLoadingMetrics = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingMetrics = false;
+        _metricsError = e.toString();
+      });
+    }
+  }
+
   /// Called once on startup — fetches GPS and resolves address.
   Future<void> _initLocation() async {
     if (widget.mockLocationText != null) {
@@ -175,6 +220,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _currentLocationText = address;
       });
       await _loadActiveTrip();
+      if (_isOnline) {
+        await LocationService.instance.startTracking();
+      }
     } else {
       setState(() {
         _isLoadingLocation = false;
@@ -401,7 +449,9 @@ class _HomeScreenState extends State<HomeScreen> {
       await _tripService.updateOnlineStatus(newStatus);
       if (newStatus) {
         await _loadActiveTrip();
+        await LocationService.instance.startTracking();
       } else {
+        LocationService.instance.stopTracking();
         if (mounted) {
           setState(() {
             _activeTripId = null;
@@ -488,7 +538,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
- Future<void> _completeRide() async {
+  Future<void> _completeRide() async {
   if (_activeTripId != null) {
     try {
       final stops = await _tripService.fetchTripStops(_activeTripId!);
@@ -517,6 +567,7 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: TruxifyColors.success,
       ),
     );
+    _loadDashboardMetrics();
   }
 }
 
@@ -1216,32 +1267,79 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildShiftMetric(
-                  icon: Icons.account_balance_wallet_outlined,
-                  value: '₹4,800',
-                  label: 'Today\'s Pay',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildShiftMetric(
-                  icon: Icons.timer_outlined,
-                  value: '6.2 hrs',
-                  label: 'Shift Hours',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildShiftMetric(
-                  icon: Icons.star_border_rounded,
-                  value: '4.85',
-                  label: 'Rating',
-                ),
-              ),
-            ],
+          if (_isLoadingMetrics)
+            const SummaryCardsShimmer()
+          else if (_metricsError != null)
+            _buildErrorMetrics()
+          else
+            _buildMetricsRow(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMetricsRow() {
+    final payValue = _todayEarnings != null
+        ? '₹${_todayEarnings!.amount.toStringAsFixed(0)}'
+        : '—';
+    final hoursValue = _todayEarnings != null
+        ? '${_todayEarnings!.hoursDriven.toStringAsFixed(1)} hrs'
+        : '—';
+    final ratingValue = _driverRating != null
+        ? _driverRating!.toStringAsFixed(2)
+        : '—';
+
+    return Row(
+      children: [
+        Expanded(
+          child: _buildShiftMetric(
+            icon: Icons.account_balance_wallet_outlined,
+            value: payValue,
+            label: 'Today\'s Pay',
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _buildShiftMetric(
+            icon: Icons.timer_outlined,
+            value: hoursValue,
+            label: 'Shift Hours',
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _buildShiftMetric(
+            icon: Icons.star_border_rounded,
+            value: ratingValue,
+            label: 'Rating',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildErrorMetrics() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? Theme.of(context).colorScheme.surfaceContainerHighest
+            : const Color(0xFFF9F7F7),
+        border: Border.all(color: TruxifyColors.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline_rounded,
+              size: 14, color: TruxifyColors.errorRed),
+          const SizedBox(width: 6),
+          Text(
+            'Metrics unavailable',
+            style: GoogleFonts.dmSans(
+              fontSize: 11,
+              color: TruxifyColors.errorRed,
+            ),
           ),
         ],
       ),

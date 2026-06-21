@@ -10,6 +10,13 @@ const getMongoDb = () => mongoDbOverride || mongoDb;
 const trackingSubscriptions = new Map();
 
 // =====================================================================
+// CLOCK SKEW & CIRCUIT BREAKER CONFIGURATION (#596)
+// =====================================================================
+const CLOCK_SKEW_TOLERANCE_MS = parseInt(process.env.CLOCK_SKEW_TOLERANCE_MS, 10) || 300000; // default ±5 min
+const MAX_CONSECUTIVE_DROPS = 10;
+const consecutiveDropCount = new Map();
+
+// =====================================================================
 // EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
 // =====================================================================
 const MAX_BUFFER_SIZE = 5000;
@@ -197,8 +204,8 @@ export function initWebSocketServer(server) {
         ws.driverId = profile.id;
         await restoreSubscriptions(ws);
         logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
-      } catch (e) {
-        logger.error({ err: e }, 'WS Auth failed');
+      } catch (err) {
+        logger.error({ err }, 'WS Auth failed');
         ws.close(4001, 'Unauthorized: Invalid token');
         return;
       }
@@ -308,56 +315,114 @@ export async function handleTrackingMessage(ws, message) {
   }
 }
 
-/**
- * Handle incoming GPS coordinate telemetry from a driver app
- */
 export async function handleLocationPing(ws, data) {
-  const { driver_id: payloadDriverId, order_display_id, latitude, longitude, speed, bearing, device_timestamp } = data;
   const driver_id = ws.driverId;
 
   if (!driver_id) {
     return ws.send(JSON.stringify({ error: 'Unauthorized: Missing authenticated WebSocket identity.' }));
   }
 
+  const { driver_id: payloadDriverId, speed, bearing, device_timestamp } = data;
+
   if (payloadDriverId && payloadDriverId !== driver_id) {
     return ws.send(JSON.stringify({ error: 'Unauthorized: driver_id does not match authenticated WebSocket identity.' }));
   }
 
-  if (!latitude || !longitude) {
+  const lat = data.lat !== undefined ? data.lat : data.latitude;
+  const lng = data.lng !== undefined ? data.lng : data.longitude;
+
+  // Fix 3: Coordinate validation — proper null/undefined, type, and range validation
+  if (lat === null || lat === undefined || typeof lat !== 'number' || !Number.isFinite(lat) ||
+      lng === null || lng === undefined || typeof lng !== 'number' || !Number.isFinite(lng)) {
     return ws.send(JSON.stringify({ error: 'Missing mandatory tracking parameters (lat, lng).' }));
   }
 
-  // 🛡️ ADJUSTMENT 2: Device Timestamp Strict Validation
-  let currentPingTime = new Date();
+  // Range validation
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return ws.send(JSON.stringify({ error: 'Coordinates out of valid range' }));
+  }
+
+  // Parse device timestamp for analytics and clock skew check only (Fix 1)
+  let deviceTime = null;
   if (device_timestamp) {
     const parsedEpoch = Date.parse(device_timestamp);
     if (isNaN(parsedEpoch)) {
       logger.error(`[TRUXIFY VALIDATION ERROR] Malformed device_timestamp received from driver: ${driver_id}. Falling back to server time.`);
-      // Prevent poisoning the Redis sequence cache with an incorrect epoch layout
     } else {
-      currentPingTime = new Date(parsedEpoch);
+      deviceTime = new Date(parsedEpoch);
     }
   }
-  const incomingEpoch = currentPingTime.getTime();
 
-  // 🛡️ 1. IDEMPOTENCY GATE & OUT-OF-ORDER SEQUENCER
+  // Clock skew validation — compare device time against server time with a configurable tolerance
+  const skewCheckTime = deviceTime || new Date();
+  const skewMs = Math.abs(skewCheckTime.getTime() - Date.now());
+  if (skewMs > CLOCK_SKEW_TOLERANCE_MS) {
+    logger.warn(
+      `[TRUXIFY CLOCK SKEW] Driver ${driver_id} clock skew ${skewMs}ms exceeds tolerance ` +
+      `${CLOCK_SKEW_TOLERANCE_MS}ms — ignoring update.`
+    );
+    return;
+  }
+
+  // Fix 1: Always use server time for sequence comparison
+  const serverNow = Date.now();
+
+  // Fix 4: IDEMPOTENCY GATE & OUT-OF-ORDER SEQUENCER + Circuit breaker
   if (redisClient) {
     try {
       const seqKey = `driver:sequence:${driver_id}`;
       const lastRecordedEpochStr = await redisClient.get(seqKey);
-      
+
       if (lastRecordedEpochStr) {
         const lastRecordedEpoch = parseInt(lastRecordedEpochStr, 10);
-        
-        if (incomingEpoch <= lastRecordedEpoch) {
+
+        if (serverNow <= lastRecordedEpoch) {
           logger.warn(`[TRUXIFY SEQUENCE CONTROL] Out-of-order telemetry dropped for Driver: ${driver_id}. Stale jitter detected.`);
+
+          // Circuit breaker: if too many consecutive drops, reset the sequence
+          const currentCount = (consecutiveDropCount.get(driver_id) || 0) + 1;
+          consecutiveDropCount.set(driver_id, currentCount);
+          if (currentCount >= MAX_CONSECUTIVE_DROPS) {
+            logger.warn(
+              `[TRUXIFY CIRCUIT BREAKER] Driver ${driver_id} exceeded max consecutive drops ` +
+              `(${MAX_CONSECUTIVE_DROPS}). Resetting sequence.`
+            );
+            await redisClient.del(seqKey);
+            consecutiveDropCount.delete(driver_id);
+          }
           return;
         }
       }
-      
-      await redisClient.set(seqKey, incomingEpoch.toString(), 'EX', 86400); 
+
+      // Reset circuit breaker on successful sequence advancement
+      consecutiveDropCount.delete(driver_id);
+      await redisClient.set(seqKey, serverNow.toString(), 'EX', 86400);
     } catch (err) {
       logger.error('Redis sequence verification cache error:', err.message);
+    }
+  }
+
+  // Resolve order details from Supabase
+  let orderUUID = data.orderId || data.order_id || null;
+  let orderDisplayId = data.order_display_id || null;
+
+  if (supabase && (orderUUID || orderDisplayId)) {
+    try {
+      let query = supabase.from('orders').select('id, order_display_id');
+      if (orderUUID && orderUUID.includes('-')) {
+        query = query.eq('id', orderUUID);
+      } else if (orderDisplayId) {
+        query = query.eq('order_display_id', orderDisplayId);
+      } else {
+        query = query.eq('order_display_id', orderUUID);
+      }
+      const { data: order } = await query.maybeSingle();
+      if (order) {
+        orderUUID = order.id;
+        orderDisplayId = order.order_display_id;
+      }
+    } catch (err) {
+      logger.error('Failed to resolve order details in tracker:', err.message);
     }
   }
 
@@ -369,15 +434,20 @@ export async function handleLocationPing(ws, data) {
   }
   telemetryWriteBuffer.push({
     driver_id,
-    order_display_id: order_display_id || null,
+    order_id: orderUUID || null,
+    order_display_id: orderDisplayId || null,
+    lat,
+    lng,
     location: {
       type: 'Point',
-      coordinates: [parseFloat(longitude), parseFloat(latitude)]
+      coordinates: [parseFloat(lng), parseFloat(lat)]
     },
     speed_kmh: speed || 0,
     bearing_deg: bearing || 0,
-    pinged_at: currentPingTime,
-    buffered_at: new Date()
+    timestamp: deviceTime || new Date(),
+    pinged_at: deviceTime || new Date(),
+    buffered_at: new Date(),
+    server_received_at: new Date(serverNow),
   });
 
   // Buffer usage monitoring
@@ -393,7 +463,7 @@ export async function handleLocationPing(ws, data) {
       const redisKey = `driver:location:${driver_id}`;
       await redisClient.set(
         redisKey,
-        JSON.stringify({ latitude, longitude, speed, bearing, updated_at: currentPingTime }),
+        JSON.stringify({ latitude: lat, longitude: lng, speed: speed || 0, bearing: bearing || 0, updated_at: new Date(serverNow) }),
         'EX',
         120
       );
@@ -406,17 +476,17 @@ export async function handleLocationPing(ws, data) {
     event: 'location_update',
     data: {
       driver_id,
-      order_display_id,
-      latitude,
-      longitude,
-      speed,
-      bearing,
-      timestamp: currentPingTime
+      order_display_id: orderDisplayId,
+      latitude: lat,
+      longitude: lng,
+      speed: speed || 0,
+      bearing: bearing || 0,
+      timestamp: new Date(serverNow)
     }
   });
 
-  if (order_display_id && trackingSubscriptions.has(order_display_id)) {
-    const clients = trackingSubscriptions.get(order_display_id);
+  if (orderDisplayId && trackingSubscriptions.has(orderDisplayId)) {
+    const clients = trackingSubscriptions.get(orderDisplayId);
     clients.forEach((client) => {
       if (client.readyState === 1) { 
         client.send(broadcastPayload);
@@ -430,6 +500,27 @@ export async function handleLocationPing(ws, data) {
       if (client.readyState === 1) {
         client.send(broadcastPayload);
       }
+    });
+  }
+
+  // Publish to Supabase Realtime channel driver-location:{orderId}
+  if (supabase && orderUUID) {
+    const channel = supabase.channel(`driver-location:${orderUUID}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'location',
+      payload: {
+        orderId: orderUUID,
+        driverId: driver_id,
+        lat,
+        lng,
+        timestamp: new Date(serverNow).toISOString()
+      }
+    }).then(() => {
+      supabase.removeChannel(channel);
+    }).catch((err) => {
+      logger.error('Failed to broadcast realtime location to Supabase:', err.message);
+      supabase.removeChannel(channel);
     });
   }
 }
@@ -459,9 +550,9 @@ async function flushTelemetryBuffer() {
     logger.info(`[TRUXIFY BATCH CONTROL] Committing bulk cluster of ${recordsToFlush.length} spatial rows to MongoDB...`);
 
     try {
-      const collection = getMongoDb().collection('live_gps_pings');
+      const collection = getMongoDb().collection('telemetry');
       await collection.insertMany(recordsToFlush, { ordered: false });
-      logger.info(`[TRUXIFY DB SUCCESS] Successfully flushed ${recordsToFlush.length} records to MongoDB clusters.`);
+      logger.info(`[TRUXIFY DB SUCCESS] Successfully flushed ${recordsToFlush.length} records to MongoDB telemetry collection.`);
       flushBackoffMs = 1000;
     } catch (err) {
       logger.error(`[TRUXIFY RETRY LOGIC] Bulk insert failed (backoff: ${flushBackoffMs}ms):`, err.message);
@@ -808,5 +899,14 @@ export const __testing = {
   },
   setMongoDbOverride(val) {
     mongoDbOverride = val;
+  },
+  getConsecutiveDropCount(driverId) {
+    return consecutiveDropCount.get(driverId) || 0;
+  },
+  clearConsecutiveDropCount() {
+    consecutiveDropCount.clear();
+  },
+  get MAX_CONSECUTIVE_DROPS() {
+    return MAX_CONSECUTIVE_DROPS;
   },
 };

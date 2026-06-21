@@ -250,4 +250,18 @@ class OrderService {
       return null;
     }
   }
+
+  Future<Map<String, dynamic>> fetchDriverLocation(String orderDisplayId) async {
+    try {
+      final body = await _apiClient.get(
+        '/api/orders/$orderDisplayId/driver-location',
+        headers: _customHeaders(),
+      );
+      return body is Map<String, dynamic> ? body : <String, dynamic>{};
+    } on ApiException catch (e) {
+      throw StateError(e.message);
+    } catch (e) {
+      throw StateError('Failed to fetch driver location: $e');
+    }
+  }
 }
