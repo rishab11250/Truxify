@@ -1109,7 +1109,7 @@ describe('flushTelemetryBuffer - with MongoDB', () => {
 
     await t.flushTelemetryBuffer();
 
-    expect(collection).toHaveBeenCalledWith('live_gps_pings');
+    expect(collection).toHaveBeenCalledWith('telemetry');
     expect(insertMany).toHaveBeenCalled();
     expect(t.getTelemetryWriteBuffer().length).toBe(0);
   });

@@ -54,6 +54,17 @@ if (mongoUri) {
       .then(() => {
         mongoDb = mongoClient.db(mongoDbName);
         console.log(`✅ Connected to MongoDB Database: "${mongoDbName}"`);
+        
+        // Create indexes on telemetry collection
+        mongoDb.collection('telemetry').createIndex(
+          { timestamp: 1 },
+          { expireAfterSeconds: 604800 }
+        ).catch(err => console.error('❌ Failed to create TTL index on telemetry:', err.message));
+        
+        mongoDb.collection('telemetry').createIndex(
+          { location: '2dsphere' }
+        ).catch(err => console.error('❌ Failed to create 2dsphere index on telemetry:', err.message));
+
         if (_mongoDbResolve) _mongoDbResolve();
       })
       .catch(err => {
