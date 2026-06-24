@@ -355,11 +355,19 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), asy
   try {
     const { data: history, error } = await supabase
       .from('orders')
-      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_name, eta, created_at')
+      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at')
       .eq('customer_id', req.user.id)
       .order('created_at', { ascending: false });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch history.', details: error.message });
+
+    const driverIds = [...new Set((history || []).filter(o => o.driver_id).map(o => o.driver_id))];
+    if (driverIds.length > 0) {
+      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', driverIds);
+      const driverMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
+      (history || []).forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
+    }
+
     res.json(history);
   } catch (err) {
     res.status(500).json({ error: 'Internal Server Error' });
