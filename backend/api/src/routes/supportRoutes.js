@@ -11,9 +11,50 @@ const FAQ_COLUMNS = 'id, question, answer, app_type, sort_order';
 const TICKET_COLUMNS = 'id, subject, description, category, status, created_at, updated_at';
 const TICKET_DETAIL_COLUMNS = 'id, user_id, subject, description, category, status, created_at, updated_at';
 
+// Canonical map of all accepted category aliases -> database values.
+// Shared by ticket creation, ticket update, and the categories endpoint.
+const CATEGORY_MAP = {
+  billing: 'payment',
+  booking: 'order',
+  payment: 'payment',
+  order: 'order',
+  technical: 'technical',
+  general: 'general',
+  account: 'account',
+};
+
+// The unique set of valid DB-level category values.
+const VALID_CATEGORIES = [...new Set(Object.values(CATEGORY_MAP))];
+
+// Human-readable labels for each DB-level category value.
+const CATEGORY_LABELS = {
+  payment: 'Payment & Billing',
+  order: 'Order & Booking',
+  technical: 'Technical Issue',
+  general: 'General Enquiry',
+  account: 'Account Management',
+};
+
 function normalizeRequiredText(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
+
+// ============================================================================
+// 0. GET SUPPORT TICKET CATEGORIES (PUBLIC - no auth required)
+// ============================================================================
+/**
+ * GET /api/support/categories
+ *
+ * Returns the list of valid accepted support ticket category values.
+ * Public so onboarding screens / mobile apps can populate dropdowns
+ * without needing a user session.
+ */
+router.get('/categories', (_req, res) => {
+  res.json({
+    categories: VALID_CATEGORIES,
+    labels: CATEGORY_LABELS,
+  });
+});
 
 // ============================================================================
 // 1. LIST ACTIVE FAQS (PUBLIC)
@@ -54,17 +95,6 @@ router.post('/tickets', authenticate, userLimiter, validateBody(createTicketSche
   const subject = normalizeRequiredText(req.body.subject);
   const category = normalizeRequiredText(req.body.category);
   const description = normalizeRequiredText(req.body.description) || subject;
-
-  // Map user-friendly/frontend categories to database-constrained values
-  const CATEGORY_MAP = {
-    billing: 'payment',
-    booking: 'order',
-    payment: 'payment',
-    order: 'order',
-    technical: 'technical',
-    general: 'general',
-    account: 'account'
-  };
 
   const normalizedCategory = category.toLowerCase();
   const dbCategory = CATEGORY_MAP[normalizedCategory] || 'general';
@@ -212,11 +242,6 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
     if (ticket.status === 'closed') {
       return res.status(400).json({ error: 'Cannot update a closed ticket.' });
     }
-
-    const CATEGORY_MAP = {
-      billing: 'payment', booking: 'order', payment: 'payment',
-      order: 'order', technical: 'technical', general: 'general', account: 'account',
-    };
 
     const updates = { updated_at: new Date().toISOString() };
 

@@ -461,4 +461,40 @@ describe('Support Routes', () => {
       expect(res.body.tickets[0].id).toBe('t1');
     });
   });
+
+  describe('GET /api/support/categories', () => {
+    it('returns 200 with categories array and labels map - no auth required', async () => {
+      const res = await request(buildApp())
+        .get('/api/support/categories');
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.categories)).toBe(true);
+      expect(res.body.categories).toContain('payment');
+      expect(res.body.categories).toContain('order');
+      expect(res.body.categories).toContain('technical');
+      expect(res.body.categories).toContain('general');
+      expect(res.body.categories).toContain('account');
+      expect(res.body.labels).toBeDefined();
+      expect(typeof res.body.labels.payment).toBe('string');
+    });
+
+    it('categories array contains no duplicates', async () => {
+      const res = await request(buildApp())
+        .get('/api/support/categories');
+
+      expect(res.status).toBe(200);
+      const unique = [...new Set(res.body.categories)];
+      expect(res.body.categories).toHaveLength(unique.length);
+    });
+
+    it('each category in the array has a corresponding label', async () => {
+      const res = await request(buildApp())
+        .get('/api/support/categories');
+
+      expect(res.status).toBe(200);
+      for (const cat of res.body.categories) {
+        expect(res.body.labels[cat]).toBeDefined();
+      }
+    });
+  });
 });
