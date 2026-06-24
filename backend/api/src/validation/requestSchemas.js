@@ -134,6 +134,13 @@ export const updateWalletSchema = z.object({
   wallet_address: z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'Must be a valid 0x-prefixed 42-character wallet address'),
 }).passthrough();
 
+export const updateProfileSchema = z.object({
+  full_name: z.string().min(1, "Name is required").max(255, "Name is too long").optional(),
+  language: z.string().max(50, "Language is too long").optional(),
+  dark_mode: z.boolean().optional(),
+  is_online: z.boolean().optional(),
+}).strict();
+
 export const registerDeviceSchema = z.object({
   fcmToken: z.string()
     .min(10, { message: 'fcmToken must be at least 10 characters' })
