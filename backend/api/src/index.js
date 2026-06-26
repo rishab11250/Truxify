@@ -8,7 +8,7 @@ import { globalLimiter, authLimiter, healthLimiter } from './middleware/rateLimi
 import tripRoutes from './routes/tripRoutes.js';
 import deviceRoutes from './routes/deviceRoutes.js';
 
-import { closeDbConnections, waitForMongoDb } from './config/db.js';
+import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js';
 import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js';
 
 // Load REST routes
@@ -32,6 +32,14 @@ import {
 // Configuration load from root folder is handled in db.js
 
 initSentry();
+
+// Validate required env vars at startup
+try {
+  validateConfig();
+} catch (err) {
+  logger.fatal(err.message);
+  process.exit(1);
+}
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
