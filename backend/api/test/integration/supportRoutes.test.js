@@ -520,6 +520,21 @@ describe('Support Routes', () => {
       expect(res.body).toHaveLength(1);
       expect(res.body[0].message).toBe('Hello');
     });
+
+    it('GET /tickets/:id/comments supports limit and offset pagination', async () => {
+      m.store.support_ticket_comments.push(
+        { id: 'c-1', ticket_id: 't-123', user_id: 'customer-1', message: 'First', created_at: '2026-06-01T00:00:00.000Z' },
+        { id: 'c-2', ticket_id: 't-123', user_id: 'customer-1', message: 'Second', created_at: '2026-06-02T00:00:00.000Z' }
+      );
+
+      const res = await request(buildApp())
+        .get('/api/support/tickets/t-123/comments?limit=1&offset=1')
+        .set(CUSTOMER_HEADERS);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].message).toBe('Second');
+    });
   });
 
   describe('GET /api/support/categories', () => {

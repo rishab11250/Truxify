@@ -422,11 +422,15 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, async (req, res) 
       return res.status(403).json({ error: 'Access Denied: You do not own this ticket.' });
     }
 
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
     const { data: comments, error: commentsError } = await supabase
       .from('support_ticket_comments')
       .select('id, ticket_id, user_id, user_name, message, created_at')
       .eq('ticket_id', ticketId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .range(offset, offset + limit - 1);
 
     if (commentsError) {
       return res.status(500).json({
