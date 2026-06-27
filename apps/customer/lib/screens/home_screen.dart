@@ -104,7 +104,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     const Icon(Icons.place_rounded, size: 16, color: TruxifyColors.accentDark),
                     const SizedBox(width: 6),
-                    Text(_isOffline ? _locationLabel : 'Surat, Gujarat', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    Text(_locationLabel, style: const TextStyle(fontWeight: FontWeight.w700)),
                   ],
                 ),
               ),
