@@ -231,9 +231,6 @@ export async function submitEscrowRefund(orderDisplayId) {
 
   const tx = await escrowContract.refundFunds(bookingId);
   logger.info(`[escrow] refundFunds tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
-  const receipt = await tx.wait(1);
-  logger.info(`[escrow] refundFunds confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`);
-  return { txHash: receipt.hash, bookingId };
   return {
     txHash: tx.hash,
     bookingId,
