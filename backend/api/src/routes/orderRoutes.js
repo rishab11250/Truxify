@@ -14,7 +14,6 @@ import {
   submitBidSchema,
   submitRatingSchema,
   paramIdSchema,
-  uuidParamSchema,
   acceptBidParamsSchema,
   updateMilestoneSchema,
   verifyDeliverySchema,
