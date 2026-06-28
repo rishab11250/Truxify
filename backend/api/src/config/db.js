@@ -14,10 +14,10 @@ dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 //    service role key for admin operations only (bypasses RLS)
 // ============================================================================
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!supabaseKey) {
-  logger.error('SUPABASE_SERVICE_ROLE_KEY is not set. Elevated operations will fail.');
-}
+// Only use the anon key for the public client — RLS must always be enforced.
+// Never fall back to SUPABASE_SERVICE_ROLE_KEY here: it bypasses all Row Level
+// Security policies and would grant every request admin-level DB access silently.
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export let supabase = null;
@@ -31,15 +31,18 @@ if (supabaseUrl && supabaseKey) {
         autoRefreshToken: false,
       }
     });
-    logger.info('Supabase client initialized successfully (service role key).');
+    logger.info('Supabase client initialized successfully (anon key).');
   } catch (error) {
     logger.error({ err: error }, 'Failed to initialize Supabase client');
   }
 } else {
-  logger.warn('SUPABASE_URL or keys not found in .env. Supabase integration disabled.');
+  logger.warn(
+    'SUPABASE_URL or SUPABASE_ANON_KEY not found in .env. Supabase integration disabled. ' +
+    'Do NOT use SUPABASE_SERVICE_ROLE_KEY for the public client — it bypasses Row Level Security.'
+  );
 }
 
-if (supabaseUrl && supabaseServiceKey) {
+if (supabaseUrl && supabaseServiceKey && supabaseServiceKey !== supabaseKey) {
   try {
     supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: {
@@ -198,27 +201,4 @@ export async function closeDbConnections() {
       redisClient = null;
     }
   }
-}
-
-/**
- * Validates that all required environment variables are present for production.
- * Logs warnings for missing optional vars, throws for missing required vars.
- */
-export function validateConfig() {
-  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY'];
-  const recommended = ['REDIS_URL', 'MONGODB_URI', 'FIREBASE_SERVICE_ACCOUNT_JSON'];
-  const missing = required.filter((key) => !process.env[key]);
-  const missingRecommended = recommended.filter((key) => !process.env[key]);
-
-  if (missing.length > 0) {
-    const msg = `Missing required env vars: ${missing.join(', ')}`;
-    logger.error(msg);
-    throw new Error(msg);
-  }
-
-  if (missingRecommended.length > 0) {
-    logger.warn(`Missing optional env vars (features disabled): ${missingRecommended.join(', ')}`);
-  }
-
-  logger.info('Config validation passed');
 }
