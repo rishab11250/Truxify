@@ -231,21 +231,32 @@ router.get('/earnings/summary', authenticate, userLimiter, requireRole(['driver'
 // ============================================================================
 router.get('/trips', authenticate, userLimiter, requireRole(['driver']), async (req, res) => {
   const { status } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
 
   try {
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
     let query = supabase
       .from('trips')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('driver_id', req.user.id);
 
     if (status) {
       query = query.eq('status', status);
     }
 
-    const { data: trips, error } = await query.order('trip_date', { ascending: false });
+    const { data: trips, error, count } = await query.order('trip_date', { ascending: false }).range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trips.', details: error.message });
-    res.json(trips || []);
+    res.json({
+      page,
+      limit,
+      total: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      trips: trips || []
+    });
   } catch (err) {
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -313,14 +324,26 @@ router.get('/trips/:tripDisplayId/route-points', authenticate, userLimiter, requ
 // ============================================================================
 router.get('/bids', authenticate, userLimiter, requireRole(['driver']), async (req, res) => {
   try {
-    const { data: bids, error } = await supabase
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data: bids, error, count } = await supabase
       .from('load_bids')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('driver_id', req.user.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch bids.', details: error.message });
-    res.json(bids || []);
+    res.json({
+      page,
+      limit,
+      total: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      bids: bids || []
+    });
   } catch (err) {
     res.status(500).json({ error: 'Internal Server Error' });
   }
