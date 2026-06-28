@@ -139,9 +139,14 @@ export async function recordDepositTx(bookingId, txHash) {
     return { error: 'Transaction is not a deposit call' };
   }
 
-  const [txBookingId] = decoded.args;
+  const [txBookingId, txCustomer] = decoded.args;
   if (txBookingId !== bookingId) {
     return { error: 'Transaction booking ID does not match' };
+  }
+
+  // Verify the on-chain sender matches the customer address in the deposit call.
+  if (tx.from.toLowerCase() !== txCustomer.toLowerCase()) {
+    return { error: 'Transaction sender does not match registered customer wallet' };
   }
 
   logger.info(`[escrow] deposit confirmed for booking ${bookingId} in block ${receipt.blockNumber}`);
