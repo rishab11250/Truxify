@@ -392,11 +392,17 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
 // ============================================================================
 router.get('/history', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
   try {
-    const { data: history, error } = await supabase
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data: history, error, count } = await supabase
       .from('orders')
-      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at')
+      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at', { count: 'exact' })
       .eq('customer_id', req.user.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch history.', details: error.message });
 
@@ -407,7 +413,13 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), asy
       (history || []).forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
     }
 
-    res.json(history);
+    res.json({
+      page,
+      limit,
+      total: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      history: history || []
+    });
   } catch (err) {
     logger.error("[orderRoutes] Failed to fetch order history:", err.message);
     res.status(500).json({ error: 'Internal Server Error' });
