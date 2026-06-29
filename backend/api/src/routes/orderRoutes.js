@@ -41,6 +41,7 @@ const router = express.Router();
 const OTP_TTL_MINUTES = parseInt(process.env.OTP_TTL_MINUTES || '15', 10);
 const OTP_MAX_FAILED_ATTEMPTS = parseInt(process.env.OTP_MAX_FAILED_ATTEMPTS || '5', 10);
 const OTP_LOCKOUT_MINUTES = parseInt(process.env.OTP_LOCKOUT_MINUTES || '30', 10);
+const IN_MEMORY_OTP_MAP_MAX_SIZE = parseInt(process.env.IN_MEMORY_OTP_MAP_MAX_SIZE || '10000', 10);
 
 const inMemoryOtpFailedAttempts = new Map();
 
@@ -86,6 +87,11 @@ async function recordOtpFailure(orderId) {
     }
   }
   
+  if (inMemoryOtpFailedAttempts.size >= IN_MEMORY_OTP_MAP_MAX_SIZE) {
+    const oldestKey = inMemoryOtpFailedAttempts.keys().next().value;
+    inMemoryOtpFailedAttempts.delete(oldestKey);
+  }
+
   let record = inMemoryOtpFailedAttempts.get(orderId);
   if (!record) {
     record = { count: 0, lockedUntil: null };
@@ -155,6 +161,22 @@ const telemetryLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many telemetry requests. Please slow down.' },
+});
+
+const resendOtpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many OTP resend requests. Please try again later.' },
+});
+
+const changeDropLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many drop change requests. Please try again later.' },
 });
 
 /**
@@ -1137,7 +1159,7 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['dri
 // ============================================================================
 // 14. RESEND DELIVERY OTP (DRIVER)
 // ============================================================================
-router.post('/:id/resend-otp', authenticate, userLimiter, requireRole(['driver']), validateParams(paramIdSchema), async (req, res) => {
+router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requireRole(['driver']), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
