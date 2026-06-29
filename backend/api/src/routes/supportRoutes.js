@@ -364,7 +364,7 @@ router.post('/tickets/:id/comments', authenticate, userLimiter, validateBody(cre
   try {
     const { data: ticket, error: fetchError } = await supabase
       .from('support_tickets')
-      .select('id, user_id')
+      .select('id, user_id, status')
       .eq('id', ticketId)
       .maybeSingle();
 
@@ -381,6 +381,10 @@ router.post('/tickets/:id/comments', authenticate, userLimiter, validateBody(cre
 
     if (ticket.user_id !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access Denied: You do not own this ticket.' });
+    }
+
+    if (ticket.status === 'closed') {
+      return res.status(409).json({ error: 'Cannot comment on a closed ticket.' });
     }
 
     const { data: comment, error: insertError } = await supabase
@@ -448,7 +452,7 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, async (req, res) 
       .from('support_ticket_comments')
       .select('id, ticket_id, user_id, user_name, message, created_at')
       .eq('ticket_id', ticketId)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: isAscending })
       .range(offset, offset + limit - 1);
 
     if (commentsError) {

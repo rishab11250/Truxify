@@ -49,14 +49,20 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
 
     // Handle vehicle_type filtering in JS to avoid database column errors.
     // Default mapped vehicle_type is 'Truck'. If they filter by something else, return empty.
-    if (req.query.vehicle_type && req.query.vehicle_type.toLowerCase() !== 'truck') {
-      return res.json({
-        page,
-        limit,
-        total: 0,
-        totalPages: 0,
-        loads: []
-      });
+    if (req.query.vehicle_type) {
+      if (typeof req.query.vehicle_type !== 'string') {
+        return res.status(400).json({ error: 'vehicle_type must be a single string' });
+      }
+
+      if (req.query.vehicle_type.toLowerCase() !== 'truck') {
+        return res.json({
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+          loads: []
+        });
+      }
     }
 
     const from = (page - 1) * limit;
@@ -66,7 +72,6 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
       .from('load_offers')
       .select('*', { count: 'exact' });
 
-    // Status filter - map 'open'/'available' to the DB's status 'available'
     let statusFilter = 'available';
     if (req.query.status) {
       if (typeof req.query.status !== 'string') {
@@ -85,6 +90,9 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
       }
     }
     query = query.eq('status', statusFilter);
+
+    // Escape LIKE special chars in user input to prevent injection
+    const escapeLike = (s) => String(s).replace(/[%_\\]/g, '\\$&');
 
     // Filters
     if (req.query.pickup_location) {

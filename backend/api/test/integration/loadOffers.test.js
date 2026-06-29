@@ -295,6 +295,31 @@ describe('Load Offers Routes Integration Tests', () => {
       expect(res.body.total).toBe(0);
     });
 
+    it('accepts truck vehicle_type filter case-insensitively', async () => {
+      m.store.load_offers.push({
+        id: 'load-1',
+        status: 'available',
+      });
+
+      const res = await request(buildApp())
+        .get('/api/loads?vehicle_type=truck')
+        .set(DRIVER_HEADERS);
+
+      expect(res.status).toBe(200);
+      expect(res.body.loads).toHaveLength(1);
+      expect(res.body.loads[0].vehicle_type).toBe('Truck');
+    });
+
+    it('rejects repeated vehicle_type filters instead of treating them as an array', async () => {
+      const res = await request(buildApp())
+        .get('/api/loads?vehicle_type=Truck&vehicle_type=Van')
+        .set(DRIVER_HEADERS);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('vehicle_type must be a single string');
+      expect(m.calls.find(call => call.table === 'load_offers')).toBeUndefined();
+    });
+
     it('maps sort_by parameters correctly', async () => {
       // Sort by estimated_price -> maps to freight_value
       await request(buildApp())
