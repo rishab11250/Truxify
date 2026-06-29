@@ -64,6 +64,7 @@ describe('tracker WebSocket telemetry authorization', () => {
       send(message) {
         sentMessages.push(JSON.parse(message));
       },
+      close: vi.fn(),
     };
 
     await handleLocationPing(ws, {
@@ -145,6 +146,10 @@ describe('tracker WebSocket telemetry authorization', () => {
 });
 
 describe('tracker WebSocket heartbeat messages', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('responds to raw client ping messages without attempting JSON parsing', async () => {
     const sentMessages = [];
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});

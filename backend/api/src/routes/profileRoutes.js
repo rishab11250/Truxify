@@ -12,7 +12,6 @@ import {
 import { supabase } from '../config/db.js';
 import { ProfileModel } from '../models/ProfileModel.js';
 import { invalidateCachedProfile, invalidateCachedSupabaseProfile } from '../lib/profileCache.js';
-
 const router = express.Router();
 
 // GET PROFILE
@@ -293,7 +292,6 @@ router.get('/driver/statement', authenticate, requireRole(['driver']), userLimit
       res.setHeader('Content-Type', 'text/csv');
       return res.send(csvString);
     }
-
     if (sort_by === 'net_earnings') {
       tripsList.sort((a, b) => b.net_earnings - a.net_earnings);
     } else if (sort_by === 'base_freight') {
