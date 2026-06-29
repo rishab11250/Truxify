@@ -212,10 +212,6 @@ export async function escrowRefund(orderDisplayId) {
   return { txHash: receipt.hash, bookingId: submitted.bookingId };
 }
 
-/**
- * Submit an escrow refund and return its hash before confirmation.
- * Callers can persist the hash before waiting on the network.
- */
 export async function submitEscrowRefund(orderDisplayId) {
   const bookingId = getEscrowBookingId(orderDisplayId);
 
