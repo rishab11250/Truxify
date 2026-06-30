@@ -21,22 +21,6 @@ export async function registerDeviceToken(req, res) {
       });
     }
 
-    const { error } = await supabase.from('user_devices').upsert(
-      {
-        user_id: userId,
-        fcm_token: fcmToken,
-        platform: platform || 'android'
-      },
-      { onConflict: 'fcm_token' }
-    );
-
-    if (error) {
-      logger.error('[DeviceController] Failed to register device token in database:', error.message);
-      return res.status(500).json({
-        error: 'Failed to register device'
-      });
-    }
-    
     const { error: profileSyncError } = await supabase
       .from('profiles')
       .update({
@@ -46,10 +30,26 @@ export async function registerDeviceToken(req, res) {
       .eq('id', userId);
 
     if (profileSyncError) {
-      logger.error(
-        '[DeviceController] Device token saved but failed to sync profiles.fcm_token:',
-        profileSyncError.message
-      );
+      logger.error('[DeviceController] Failed to sync profiles.fcm_token:', profileSyncError.message);
+      return res.status(500).json({
+        error: 'Failed to register device'
+      });
+    }
+
+    const { error } = await supabase.from('user_devices').upsert(
+      {
+        user_id: userId,
+        fcm_token: fcmToken,
+        platform: platform || 'android'
+      },
+      { onConflict: 'user_id,fcm_token' }
+    );
+
+    if (error) {
+      logger.error('[DeviceController] Failed to register device token in database:', error.message);
+      return res.status(500).json({
+        error: 'Failed to register device'
+      });
     }
 
     return res.json({
