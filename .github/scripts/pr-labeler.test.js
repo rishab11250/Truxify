@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const {
   findLinkedIssueNumbers,
   hasProgramSignal,
-  selectLabels
+  selectLabels,
+  run
 } = require('./pr-labeler');
 
 const availableLabels = [
@@ -173,4 +174,127 @@ test('selectLabels matches new performance, design, devops, and accessibility pr
     detectedPrograms: ['gssoc']
   });
   assert.deepEqual(labelsA11y, ['gssoc:approved', 'type:accessibility']);
+});
+
+test('run function adds merge conflicts label if PR is not mergeable', async () => {
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'merge conflicts' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 123,
+            title: 'feat: new feature',
+            body: 'GSSoC',
+            labels: [],
+            mergeable: false,
+            mergeable_state: 'dirty'
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async () => {},
+        addLabels: async ({ labels }) => {
+          assert.equal(labels.includes('merge conflicts'), true);
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 123,
+        labels: []
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+});
+
+test('run function removes merge conflicts label if PR is mergeable', async () => {
+  let removeLabelCalled = false;
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'merge conflicts' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 123,
+            title: 'feat: new feature',
+            body: 'GSSoC',
+            labels: [{ name: 'merge conflicts' }],
+            mergeable: true,
+            mergeable_state: 'clean'
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async () => {},
+        addLabels: async () => {},
+        removeLabel: async ({ name }) => {
+          assert.equal(name, 'merge conflicts');
+          removeLabelCalled = true;
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 123,
+        labels: [{ name: 'merge conflicts' }]
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+
+  assert.equal(removeLabelCalled, true);
 });

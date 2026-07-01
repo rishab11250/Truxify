@@ -174,6 +174,14 @@ async function run({ github, context, core, rulesPath = DEFAULT_RULES_PATH, dryR
       core.info('No pull_request payload found and not an issue comment on a PR; skipping PR labeler.');
       return [];
     }
+  } else {
+    core.info(`Fetching latest PR details for PR #${pullRequest.number}...`);
+    const response = await github.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: pullRequest.number
+    });
+    pullRequest = response.data;
   }
 
   const pullNumber = pullRequest.number;
@@ -264,6 +272,37 @@ Please reply to this PR with either **GSSOC** or **ECSoC** so we can label it co
     rules,
     detectedPrograms
   });
+
+  // Handle merge conflict label
+  const isConflict = pullRequest.mergeable === false || pullRequest.mergeable_state === 'dirty';
+  const hasConflictLabel = currentLabels.map(normalize).includes('merge conflicts');
+
+  if (isConflict && !hasConflictLabel) {
+    if (!availableLabels.map(normalize).includes('merge conflicts')) {
+      if (!dryRun) {
+        await ensureLabelExists(github, owner, repo, 'merge conflicts', 'd73a4a', 'PR has merge conflicts');
+      }
+      availableLabels.push('merge conflicts');
+    }
+    labelsToAdd.push('merge conflicts');
+  }
+
+  const isClean = pullRequest.mergeable === true;
+  if (isClean && hasConflictLabel) {
+    core.info(`PR is mergeable and has 'merge conflicts' label. Removing the label...`);
+    if (!dryRun) {
+      try {
+        await github.rest.issues.removeLabel({
+          owner,
+          repo,
+          issue_number: pullNumber,
+          name: 'merge conflicts'
+        });
+      } catch (error) {
+        core.warning(`Failed to remove 'merge conflicts' label: ${error.message}`);
+      }
+    }
+  }
 
   core.info(`Changed files: ${changedFiles.join(', ') || 'none'}`);
   core.info(`Linked issues: ${linkedIssueNumbers.join(', ') || 'none'}`);
