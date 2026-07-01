@@ -44,7 +44,7 @@ export function attachLocationServer(httpServer) {
   driverNs.on("connection", (socket) => {
     const { driverId, bookingId } = socket.data;
 
-    console.log(`[WS] Driver ${driverId} connected for booking ${bookingId}`);
+    // Joined their booking room (for server-side routing)
 
     // Join their booking room (for server-side routing)
     socket.join(`driver:${driverId}`);
@@ -109,7 +109,7 @@ export function attachLocationServer(httpServer) {
     });
 
     socket.on("disconnect", (reason) => {
-      console.log(`[WS] Driver ${driverId} disconnected: ${reason}`);
+      // Driver disconnected
     });
 
     socket.on("error", (error) => {
@@ -124,8 +124,6 @@ export function attachLocationServer(httpServer) {
 
   customerNs.on("connection", (socket) => {
     const { customerId } = socket.data;
-
-    console.log(`[WS] Customer ${customerId} connected`);
 
     /**
      * Customer subscribes to a specific booking's live location.
@@ -185,11 +183,9 @@ export function attachLocationServer(httpServer) {
     });
 
     socket.on("disconnect", (reason) => {
-      console.log(`[WS] Customer ${customerId} disconnected: ${reason}`);
+      // Customer disconnected
     });
   });
-
-  console.log("[WS] Truxify Location Server attached (/driver + /customer)");
 
   return io;
 }

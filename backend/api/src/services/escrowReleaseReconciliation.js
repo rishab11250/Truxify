@@ -18,7 +18,7 @@ export async function reconcilePendingEscrowReleases() {
     try {
       const acquired = await redisClient.set(LOCK_KEY, process.pid.toString(), 'NX', 'EX', LOCK_TTL_SECONDS);
       if (!acquired) {
-        console.log('[escrow-release-reconciliation] Lock held by another instance, skipping.');
+        // Lock held by another instance, skipping
         return;
       }
       lockAcquired = true;
@@ -52,7 +52,7 @@ export async function reconcilePendingEscrowReleases() {
     }
 
     if (!failedOrders || failedOrders.length === 0) {
-      console.log('[escrow-release-reconciliation] No pending release failures found.');
+      // No pending release failures found
       return;
     }
 
@@ -65,7 +65,7 @@ export async function reconcilePendingEscrowReleases() {
           });
 
         if ((!claimed || claimed.length === 0) && !claimError) {
-          console.log(`[escrow-release-reconciliation] Order ${order.order_display_id} already claimed by another instance, skipping.`);
+          // Order already claimed by another instance, skipping
           continue;
         }
 
@@ -76,7 +76,7 @@ export async function reconcilePendingEscrowReleases() {
             .eq('id', order.id)
             .maybeSingle();
           if (existing && (existing.escrow_status !== 'release_failed' || existing.reconciled_by)) {
-            console.log(`[escrow-release-reconciliation] Order ${order.order_display_id} already processed, skipping.`);
+            // Order already processed, skipping
             continue;
           }
         }
@@ -110,7 +110,7 @@ export async function reconcilePendingEscrowReleases() {
             updateError.message
           );
         } else {
-          console.log(`[escrow-release-reconciliation] Release succeeded for ${order.order_display_id}`);
+          // Release succeeded
         }
       } catch (err) {
         const releaseAttemptedAt = new Date().toISOString();
