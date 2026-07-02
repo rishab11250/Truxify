@@ -23,9 +23,9 @@ function buildRouteUrl({ pickupLat, pickupLng, dropLat, dropLng }) {
   return url;
 }
 
-function buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng}){
-  const r = (n) => Number(n.toFixed(4));
-  return `osrm:route:${r(pickupLat)}:${r(pickupLng)}:${r(dropLat)}:${r(dropLng)}`;
+function buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng }) {
+  const r = (n) => Number(n.toFixed(6));
+  return `osrm:route:v2:${r(pickupLat)}:${r(pickupLng)}:${r(dropLat)}:${r(dropLng)}`;
 }
 
 export async function getRouteEstimate({ pickupLat, pickupLng, dropLat, dropLng } = {}) {
@@ -38,12 +38,11 @@ export async function getRouteEstimate({ pickupLat, pickupLng, dropLat, dropLng 
 
   const cacheKey = buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng });
 
-  if(redisClient){
+  if (redisClient) {
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) return JSON.parse(cached);
-
-    } catch(err){
+    } catch (err) {
       logger.error('[osrm] Redis get error:', err.message);
     }
   }
@@ -122,8 +121,8 @@ function buildGeometryUrl({ originLat, originLng, destLat, destLng }) {
 }
 
 function buildGeometryCacheKey({ originLat, originLng, destLat, destLng }) {
-  const r = (n) => Number(n.toFixed(4));
-  return `osrm:geometry:${r(originLat)}:${r(originLng)}:${r(destLat)}:${r(destLng)}`;
+  const r = (n) => Number(n.toFixed(6));
+  return `osrm:geometry:v2:${r(originLat)}:${r(originLng)}:${r(destLat)}:${r(destLng)}`;
 }
 
 export async function getRouteGeometry({ originLat, originLng, destLat, destLng } = {}) {
