@@ -309,7 +309,7 @@ router.get('/driver/statement', authenticate, requireRole(['driver']), userLimit
       trips: tripsList
   } catch (err) {
     logger.error(err);
-    res.status(500).json({ error: 'Internal Server Error', details: err.message, stack: err.stack });
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
