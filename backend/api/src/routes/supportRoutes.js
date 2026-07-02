@@ -148,8 +148,16 @@ router.post('/tickets', authenticate, userLimiter, validateBody(createTicketSche
 // ============================================================================
 router.get('/tickets', authenticate, userLimiter, async (req, res) => {
   const { status, category, page = '1', limit = '20' } = req.query;
-  const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const parsedPage = parseInt(page, 10);
+  const parsedLimit = parseInt(limit, 10);
+  if (!Number.isInteger(parsedPage) || parsedPage < 1) {
+    return res.status(400).json({ error: 'page must be a positive integer' });
+  }
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+    return res.status(400).json({ error: 'limit must be a positive integer' });
+  }
+  const pageNum = parsedPage;
+  const limitNum = Math.min(100, parsedLimit);
   const offset = (pageNum - 1) * limitNum;
   const dbCategory = normalizeCategoryAlias(category);
 
@@ -320,8 +328,16 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
 // ============================================================================
 router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), async (req, res) => {
   const { status, category, user_id, page = '1', limit = '20' } = req.query;
-  const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const parsedPage = parseInt(page, 10);
+  const parsedLimit = parseInt(limit, 10);
+  if (!Number.isInteger(parsedPage) || parsedPage < 1) {
+    return res.status(400).json({ error: 'page must be a positive integer' });
+  }
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+    return res.status(400).json({ error: 'limit must be a positive integer' });
+  }
+  const pageNum = parsedPage;
+  const limitNum = Math.min(100, parsedLimit);
   const offset = (pageNum - 1) * limitNum;
   const dbCategory = normalizeCategoryAlias(category);
 
@@ -462,8 +478,16 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, async (req, res) 
       return res.status(403).json({ error: 'Access Denied: You do not own this ticket.' });
     }
 
-    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
-    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const rawLimit = req.query.limit;
+    const rawOffset = req.query.offset;
+    if (rawLimit !== undefined && (!Number.isFinite(Number(rawLimit)) || Number(rawLimit) < 1)) {
+      return res.status(400).json({ error: 'limit must be a positive integer' });
+    }
+    if (rawOffset !== undefined && (!Number.isFinite(Number(rawOffset)) || Number(rawOffset) < 0)) {
+      return res.status(400).json({ error: 'offset must be a non-negative integer' });
+    }
+    const limit = Math.min(100, Math.max(1, Number(rawLimit) || 100));
+    const offset = Math.max(0, Number(rawOffset) || 0);
 
     const { data: comments, error: commentsError } = await supabase
       .from('support_ticket_comments')
