@@ -1489,12 +1489,18 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
     if (order.escrow_status !== 'funding') {
       return res.status(400).json({ error: 'Order is not in funding state' });
     }
-    if (order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
+
+    // Fetch the customer's registered wallet address for on-chain sender verification
+    const { data: customerProfile } = await supabase
+      .from('profiles')
+      .select('polygon_wallet_address')
+      .eq('id', order.customer_id)
+      .maybeSingle();
+
+    const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
     const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
-    const result = await recordDepositTx(bookingId, txHash);
+    const result = await recordDepositTx(bookingId, txHash, customerWallet);
 
     if (result.error) return res.status(422).json({ error: result.error });
 
