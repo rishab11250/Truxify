@@ -815,7 +815,7 @@ create index if not exists idx_user_devices_fcm_token on user_devices (fcm_token
 -- ────────────────────────────────────────────────────────────────────────────
 -- SECURITY CRITICAL: Each driver can only access their own location data.
 -- Admins can access all locations for dispatch operations.
--- This prevents issue #1010: cross-driver location data leakage.
+-- Prevents cross-driver location data leakage.
 create table if not exists driver_locations (
   id                uuid primary key default gen_random_uuid(),
   driver_id         uuid not null references profiles(id) on delete cascade,

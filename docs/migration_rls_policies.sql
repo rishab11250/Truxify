@@ -227,7 +227,7 @@ CREATE POLICY "Users access own user_devices"
 -- SECURITY: Each driver can only access their own location data.
 -- Admins can access all locations for dispatch operations.
 -- This prevents the vulnerability where any authenticated driver could query
--- other drivers' real-time locations (issue #1010).
+-- other drivers' real-time locations.
 
 ALTER TABLE IF EXISTS driver_locations ENABLE ROW LEVEL SECURITY;
 
