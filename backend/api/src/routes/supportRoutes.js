@@ -102,6 +102,12 @@ const CATEGORY_DESCRIPTIONS = {
   account: 'Login problems, account settings, and profile access.',
 };
 
+/**
+ * @route GET /api/support/categories
+ * @desc Retrieve the valid support ticket categories, their human-readable labels, descriptions, and SLA response times
+ * @access Public (No authentication required)
+ * @returns {object} 200 - Object containing categories array, labels map, SLA hours map, and descriptions map
+ */
 router.get('/categories', (_req, res) => {
   res.json({
     categories: VALID_CATEGORIES,
