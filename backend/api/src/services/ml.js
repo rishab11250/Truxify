@@ -87,7 +87,7 @@ export async function predictPrice({
     routeOrigin = '',
     routeDestination = '',
 } = {}) {
-    const url = `${getBaseUrl()}/predict`;
+    const url = `${getBaseUrl()}/predict/price`;
 
     const payload = {
         distance_km: distanceKm,
