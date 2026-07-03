@@ -238,6 +238,7 @@ process.on('uncaughtException', async (err) => {
 process.on('unhandledRejection', async (reason) => {
   logger.error({ reason }, 'Unhandled promise rejection');
   await flushSentry(2000);
+  process.exit(1);
 });
 
 process.on('SIGTERM', () => shutdown('SIGTERM')); // Docker / Kubernetes stop
