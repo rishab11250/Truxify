@@ -587,21 +587,17 @@ async function flushTelemetryBuffer() {
   if (flushMutex) return;
   flushMutex = true;
 
-  // Atomic buffer swap: take everything pending (retry queue first, then the
-  // active buffer) and reset both. Any ping that arrives while the insert is
-  // in flight lands in the fresh active buffer, and on failure the taken
-  // records are prepended back so oldest data retries first. Taking a merged
-  // snapshot (instead of aliasing the active buffer as the flush buffer)
-  // avoids re-queueing the same array twice on transient failures.
-  const recordsToFlush = telemetryFlushBuffer.length > 0
-    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer]
-    : telemetryWriteBuffer;
-  telemetryFlushBuffer = [];
+  const recordsToFlush = [...(telemetryFlushBuffer.length > 0 ? telemetryFlushBuffer : telemetryWriteBuffer)];
+  if (telemetryFlushBuffer.length > 0) {
+    telemetryFlushBuffer = [];
+  }
+  telemetryFlushBuffer = telemetryWriteBuffer;
   telemetryWriteBuffer = [];
 
-  flushMutex = false;
-
-  if (recordsToFlush.length === 0) return;
+  if (recordsToFlush.length === 0) {
+    flushMutex = false;
+    return;
+  }
 
   currentFlushPromise = (async () => {
     logger.info(`[TRUXIFY BATCH CONTROL] Committing bulk cluster of ${recordsToFlush.length} spatial rows to MongoDB...`);
@@ -624,7 +620,6 @@ async function flushTelemetryBuffer() {
         } else {
           logger.error(`[TRUXIFY VALIDATION] Bulk insert validation error: ${err.message}`);
         }
-        // Prepend succeeded records to the FRONT for oldest-first retry priority
         const succeeded = err.writeErrors
           ? recordsToFlush.filter((_, i) => !err.writeErrors.some(e => e.index === i))
           : [];
@@ -640,11 +635,10 @@ async function flushTelemetryBuffer() {
         }
       } else {
         flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
-        // Prepend failed records to the FRONT for oldest-first retry priority
-        telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
-        if (telemetryWriteBuffer.length > MAX_BUFFER_SIZE) {
-          const overflowDrop = telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
-          telemetryWriteBuffer.splice(0, overflowDrop);
+        telemetryFlushBuffer = [...recordsToFlush, ...telemetryFlushBuffer];
+        if (telemetryFlushBuffer.length > MAX_BUFFER_SIZE) {
+          const overflowDrop = telemetryFlushBuffer.length - MAX_BUFFER_SIZE;
+          telemetryFlushBuffer.splice(0, overflowDrop);
           telemetryTotalDropped += overflowDrop;
           telemetryOverflowDropped += overflowDrop;
           logger.warn(`[TRUXIFY BUFFER DROP] Capacity limit: dropped ${overflowDrop} oldest records from retry merge. Total dropped: ${telemetryTotalDropped}`);
@@ -652,6 +646,7 @@ async function flushTelemetryBuffer() {
       }
     } finally {
       currentFlushPromise = null;
+      flushMutex = false;
     }
   })();
 
