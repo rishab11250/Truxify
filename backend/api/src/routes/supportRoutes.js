@@ -10,6 +10,7 @@ const router = express.Router();
 const FAQ_COLUMNS = 'id, question, answer, app_type, sort_order';
 const TICKET_COLUMNS = 'id, subject, description, category, status, created_at, updated_at';
 const TICKET_DETAIL_COLUMNS = 'id, user_id, subject, description, category, status, created_at, updated_at';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Canonical map of all accepted category aliases -> database values.
 // Shared by ticket creation, ticket update, and the categories endpoint.
@@ -39,6 +40,14 @@ function parseIntegerQuery(value, fallback, field, { min }) {
   }
 
   return { value: parsed };
+}
+
+function parseUuidQuery(value, field) {
+  if (value === undefined) return { value: undefined };
+  if (typeof value !== 'string' || !UUID_REGEX.test(value)) {
+    return { error: `${field} must be a valid UUID` };
+  }
+  return { value };
 }
 
 // ============================================================================
@@ -361,6 +370,11 @@ router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), 
     return res.status(400).json({ error: 'Unsupported support ticket category.' });
   }
 
+  const userIdResult = parseUuidQuery(user_id, 'user_id');
+  if (userIdResult.error) {
+    return res.status(400).json({ error: userIdResult.error });
+  }
+
   try {
     let query = supabase
       .from('support_tickets')
@@ -374,8 +388,8 @@ router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), 
       query = query.eq('category', dbCategory);
     }
 
-    if (user_id) {
-      query = query.eq('user_id', user_id);
+    if (userIdResult.value) {
+      query = query.eq('user_id', userIdResult.value);
     }
 
     const { data: tickets, error, count } = await query
