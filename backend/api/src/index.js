@@ -12,7 +12,7 @@ import deviceRoutes from './routes/deviceRoutes.js';
 
 import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js';
 import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js';
-import { attachLocationServer } from './sockets/locationServer.js';
+import { initLocationServer, closeLocationServer } from './sockets/locationServer.js';
 import { startEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js';
 
 // Load REST routes
@@ -179,7 +179,7 @@ app.use((err, req, res, next) => {
 // ============================================================================
 await waitForMongoDb();
 initWebSocketServer(server);
-attachLocationServer(server);
+initLocationServer(server);
 
 // ============================================================================
 // START SERVER
@@ -217,6 +217,7 @@ async function shutdown(signal) {
 
     // 2. Flush buffered telemetry and close WebSocket resources
     await closeWebSocketServer();
+    await closeLocationServer();
     logger.info('[shutdown] WebSocket resources closed.');
 
     // 3. Close database/cache connections
