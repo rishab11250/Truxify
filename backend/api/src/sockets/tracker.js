@@ -138,12 +138,17 @@ export function initWebSocketServer(server) {
         ws.close(4003, 'BYPASS_AUTH is not allowed in production');
         return;
       }
+      const devToken = reqUrl.searchParams.get('dev_access_token');
+      if (!devToken || !process.env.DEV_ACCESS_TOKEN || devToken !== process.env.DEV_ACCESS_TOKEN) {
+        ws.close(4001, 'Unauthorized: Missing or invalid dev_access_token');
+        return;
+      }
       ws.driverId = reqUrl.searchParams.get('driver_id') || 'test_driver';
       ws.user = {
         id: reqUrl.searchParams.get('user_id') || ws.driverId,
         role: reqUrl.searchParams.get('user_role') || 'driver',
       };
-      logger.info(`🔓 WS Auth bypassed for driver: ${ws.driverId}`);
+      logger.warn({ event: 'WS_BYPASS_AUTH_USED', driverId: ws.driverId, role: ws.user.role }, 'WS Auth bypassed via DEV_ACCESS_TOKEN');
     } else {
       if (!token) {
         ws.close(4001, 'Unauthorized: No token provided');
@@ -237,7 +242,7 @@ export function initWebSocketServer(server) {
     });
 
     ws.on('message', (message) => {
-      handleTrackingMessage(ws, message);
+      handleTrackingMessage(ws, message, req);
     });
 
     ws.on('close', () => {
@@ -291,7 +296,7 @@ function isMessageRateLimited(ws) {
   return state.count > MAX_MSG_PER_SECOND;
 }
 
-export async function handleTrackingMessage(ws, message) {
+export async function handleTrackingMessage(ws, message, req) {
   if (isMessageRateLimited(ws)) {
     return;
   }
@@ -313,7 +318,7 @@ export async function handleTrackingMessage(ws, message) {
 
     switch (event) {
       case 'location_ping':
-        await handleLocationPing(ws, data);
+        await handleLocationPing(ws, data, req);
         break;
 
       case 'subscribe_tracking':
@@ -333,7 +338,7 @@ export async function handleTrackingMessage(ws, message) {
   }
 }
 
-export async function handleLocationPing(ws, data) {
+export async function handleLocationPing(ws, data, req) {
   const driver_id = ws.driverId;
 
   if (!driver_id) {
@@ -343,7 +348,7 @@ export async function handleLocationPing(ws, data) {
   const { driver_id: payloadDriverId, speed, bearing, device_timestamp } = data;
 
   if (payloadDriverId && payloadDriverId !== driver_id) {
-    const clientIp = ws.upgradeReq?.socket?.remoteAddress || 'unknown';
+    const clientIp = req ? getClientIp(req) : 'unknown';
     logger.error({
       event: 'SPOOFED_LOCATION_ATTEMPT',
       authenticatedDriver: driver_id,
@@ -587,21 +592,20 @@ async function flushTelemetryBuffer() {
   if (flushMutex) return;
   flushMutex = true;
 
-  // Atomic buffer swap: take everything pending (retry queue first, then the
-  // active buffer) and reset both. Any ping that arrives while the insert is
-  // in flight lands in the fresh active buffer, and on failure the taken
-  // records are prepended back so oldest data retries first. Taking a merged
-  // snapshot (instead of aliasing the active buffer as the flush buffer)
-  // avoids re-queueing the same array twice on transient failures.
-  const recordsToFlush = telemetryFlushBuffer.length > 0
-    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer]
-    : telemetryWriteBuffer;
-  telemetryFlushBuffer = [];
-  telemetryWriteBuffer = [];
+  let recordsToFlush = [];
+  if (telemetryFlushBuffer.length > 0) {
+    recordsToFlush = [...telemetryFlushBuffer];
+    telemetryFlushBuffer = [...telemetryWriteBuffer];
+    telemetryWriteBuffer = [];
+  } else {
+    recordsToFlush = [...telemetryWriteBuffer];
+    telemetryWriteBuffer = [];
+  }
 
-  flushMutex = false;
-
-  if (recordsToFlush.length === 0) return;
+  if (recordsToFlush.length === 0) {
+    flushMutex = false;
+    return;
+  }
 
   currentFlushPromise = (async () => {
     logger.info(`[TRUXIFY BATCH CONTROL] Committing bulk cluster of ${recordsToFlush.length} spatial rows to MongoDB...`);
@@ -624,7 +628,6 @@ async function flushTelemetryBuffer() {
         } else {
           logger.error(`[TRUXIFY VALIDATION] Bulk insert validation error: ${err.message}`);
         }
-        // Prepend succeeded records to the FRONT for oldest-first retry priority
         const succeeded = err.writeErrors
           ? recordsToFlush.filter((_, i) => !err.writeErrors.some(e => e.index === i))
           : [];
@@ -640,18 +643,23 @@ async function flushTelemetryBuffer() {
         }
       } else {
         flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
-        // Prepend failed records to the FRONT for oldest-first retry priority
-        telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
-        if (telemetryWriteBuffer.length > MAX_BUFFER_SIZE) {
-          const overflowDrop = telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
-          telemetryWriteBuffer.splice(0, overflowDrop);
+        telemetryFlushBuffer = [...recordsToFlush, ...telemetryFlushBuffer];
+        let overflowDrop = telemetryFlushBuffer.length + telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
+        if (overflowDrop > 0) {
+          if (overflowDrop > telemetryFlushBuffer.length) {
+            telemetryWriteBuffer.splice(0, overflowDrop - telemetryFlushBuffer.length);
+            telemetryFlushBuffer = [];
+          } else {
+            telemetryFlushBuffer.splice(0, overflowDrop);
+          }
           telemetryTotalDropped += overflowDrop;
           telemetryOverflowDropped += overflowDrop;
-          logger.warn(`[TRUXIFY BUFFER DROP] Capacity limit: dropped ${overflowDrop} oldest records from retry merge. Total dropped: ${telemetryTotalDropped}`);
+          logger.warn(`[TRUXIFY BUFFER DROP] Capacity limit: dropped ${overflowDrop} oldest records from retry merge.`);
         }
       }
     } finally {
       currentFlushPromise = null;
+      flushMutex = false;
     }
   })();
 
@@ -999,11 +1007,20 @@ export const __testing = {
   getTelemetryWriteBuffer() {
     return telemetryWriteBuffer;
   },
+  getTelemetryFlushBuffer() {
+    return telemetryFlushBuffer;
+  },
   setTelemetryWriteBuffer(records) {
     telemetryWriteBuffer = records;
   },
+  setTelemetryFlushBuffer(records) {
+    telemetryFlushBuffer = records;
+  },
   clearTelemetryWriteBuffer() {
     telemetryWriteBuffer = [];
+  },
+  clearTelemetryFlushBuffer() {
+    telemetryFlushBuffer = [];
   },
   getShutdownState() {
     return {
@@ -1032,3 +1049,5 @@ export const __testing = {
     return MAX_CONSECUTIVE_DROPS;
   },
 };
+
+// Fix: implemented exponential backoff (retry count * 1000ms) for Supabase channel reconnects.
