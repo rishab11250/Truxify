@@ -1,4 +1,7 @@
--- Consume the delivery OTP in the same transaction that completes the trip.
+-- Migration: Add auth.uid() verification to complete_trip_tx function
+-- This fixes privilege escalation vulnerability where any authenticated user could
+-- call this function directly via Supabase REST API, bypassing Node.js backend authorization.
+-- Issue: #1851
 
 DROP FUNCTION IF EXISTS complete_trip_tx(UUID, UUID, TEXT);
 
@@ -6,7 +9,6 @@ CREATE OR REPLACE FUNCTION complete_trip_tx(p_order_id UUID, p_otp_id UUID, p_re
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
 AS $$
 DECLARE
   v_order RECORD;
@@ -21,6 +23,11 @@ BEGIN
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Order not found';
+  END IF;
+
+  -- Verify the caller IS the driver assigned to this order
+  IF auth.uid() <> v_order.driver_id THEN
+    RAISE EXCEPTION 'Unauthorized: you can only complete trips you are assigned to';
   END IF;
 
   IF v_order.driver_id IS NULL THEN
