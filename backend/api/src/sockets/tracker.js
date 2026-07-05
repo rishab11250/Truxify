@@ -592,15 +592,19 @@ async function flushTelemetryBuffer() {
   if (flushMutex) return;
   flushMutex = true;
 
-  let recordsToFlush = [];
-  if (telemetryFlushBuffer.length > 0) {
-    recordsToFlush = [...telemetryFlushBuffer];
-    telemetryFlushBuffer = [...telemetryWriteBuffer];
-    telemetryWriteBuffer = [];
-  } else {
-    recordsToFlush = [...telemetryWriteBuffer];
-    telemetryWriteBuffer = [];
-  }
+  // Atomic buffer swap: take everything pending (retry queue first, then the
+  // active buffer) and reset both. Any ping that arrives while the insert is
+  // in flight lands in the fresh active buffer, and on failure the taken
+  // records are prepended back so oldest data retries first. Taking a merged
+  // snapshot (instead of aliasing the active buffer as the flush buffer)
+  // avoids re-queueing the same array twice on transient failures.
+  const recordsToFlush = telemetryFlushBuffer.length > 0
+    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer]
+    : telemetryWriteBuffer;
+  telemetryFlushBuffer = [];
+  telemetryWriteBuffer = [];
+
+  flushMutex = false;
 
   if (recordsToFlush.length === 0) {
     flushMutex = false;
@@ -643,15 +647,11 @@ async function flushTelemetryBuffer() {
         }
       } else {
         flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
-        telemetryFlushBuffer = [...recordsToFlush, ...telemetryFlushBuffer];
-        let overflowDrop = telemetryFlushBuffer.length + telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
-        if (overflowDrop > 0) {
-          if (overflowDrop > telemetryFlushBuffer.length) {
-            telemetryWriteBuffer.splice(0, overflowDrop - telemetryFlushBuffer.length);
-            telemetryFlushBuffer = [];
-          } else {
-            telemetryFlushBuffer.splice(0, overflowDrop);
-          }
+        // Prepend failed records to the FRONT for oldest-first retry priority
+        telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
+        if (telemetryWriteBuffer.length > MAX_BUFFER_SIZE) {
+          const overflowDrop = telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
+          telemetryWriteBuffer.splice(0, overflowDrop);
           telemetryTotalDropped += overflowDrop;
           telemetryOverflowDropped += overflowDrop;
           logger.warn(`[TRUXIFY BUFFER DROP] Capacity limit: dropped ${overflowDrop} oldest records from retry merge.`);

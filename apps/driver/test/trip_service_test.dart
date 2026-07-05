@@ -179,6 +179,8 @@ void main() {
 
       final service = TripService(client: ownedTripClient(), httpClient: mockHttp);
 
+      final service = TripService(client: ownedTripClient(), httpClient: mockHttp);
+
       final service = TripService(client: client, httpClient: mockHttp);
 
       expect(requests, hasLength(1));
