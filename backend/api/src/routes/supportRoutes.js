@@ -219,6 +219,10 @@ router.get('/tickets', authenticate, userLimiter, async (req, res) => {
       .eq('user_id', req.user.id);
 
     if (status) {
+      const ALLOWED_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
+      if (!ALLOWED_STATUSES.includes(status)) {
+        return res.status(400).json({ error: 'Unsupported support ticket status.' });
+      }
       query = query.eq('status', status);
     }
 
