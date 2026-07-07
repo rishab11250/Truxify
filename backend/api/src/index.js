@@ -25,6 +25,7 @@ import loadRoutes from './routes/loadRoutes.js';
 import truckRoutes from './routes/truckRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import healthRoutes from './routes/healthRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 import logger from './middleware/logger.js';
 import { setupSwagger } from './config/swagger.js';
@@ -155,6 +156,7 @@ app.use('/api/devices', deviceRoutes);
 app.use('/api/driver/documents', documentRoutes);
 app.use('/api/trucks', truckRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // Setup Swagger Documentation
 setupSwagger(app);
