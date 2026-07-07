@@ -216,7 +216,12 @@ router.get('/:id/events', authenticate, userLimiter, async (req, res) => {
       .order('event_timestamp', { ascending: isAscending });
 
     if (eventsErr) {
-      return res.status(500).json({ error: 'Failed to fetch trip events.', details: eventsErr.message });
+      return res.status(500).json({
+        error: 'Failed to fetch trip events.',
+        code: 'TRIP_EVENTS_FETCH_ERROR',
+        details: eventsErr.message,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     if (!events || events.length === 0) {
