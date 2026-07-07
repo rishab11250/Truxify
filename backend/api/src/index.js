@@ -1,5 +1,6 @@
 import express from 'express';
 import { corsMiddleware } from './middleware/cors.js';
+import { i18nMiddleware, errorTranslationInterceptor } from './middleware/i18n.js';
 import helmet from 'helmet'; // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http';
 import dotenv from 'dotenv';
@@ -63,6 +64,8 @@ if (!process.env.DRIVER_LOGIN_OTP) {
   logger.warn('DRIVER_LOGIN_OTP is not set. Driver OTP login will be disabled until it is configured in production.');
 }
 const app = express();
+app.use(i18nMiddleware);
+app.use(errorTranslationInterceptor);
 const server = http.createServer(app);
 
 // Trust proxy required for rate-limiting behind load balancers/Docker.
