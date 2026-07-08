@@ -732,7 +732,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
     const { milestone } = req.body;
     const milestoneMap = {
       'Arrived at Pickup': 'at_pickup',
-      'Goods Loaded': 'in_transit',
+      'Goods Loaded': 'loaded',
       'In Transit': 'in_transit',
       'Arrived at Drop-off': 'at_dropoff',
       'Goods Unloaded': 'at_dropoff'
