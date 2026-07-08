@@ -32,6 +32,8 @@ services:
     build:
       context: ./backend/ml
     container_name: truxify-ml-engine
+    env_file:
+      - .env
     ports:
       - "8001:8000"
     environment:
