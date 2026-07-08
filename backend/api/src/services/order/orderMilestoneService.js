@@ -8,11 +8,10 @@ import {
   verifyDeliveryOtp,
 } from '../notificationService.js';
 import { escrowRelease } from '../escrow.js';
-import { DomainError } from './bidAcceptanceService.js';
+import { DomainError } from './domainError.js';
 import { OrderTimelineService } from './orderTimelineService.js';
 
 const orderTimelineService = new OrderTimelineService({ supabase, logger });
-import { DomainError } from './domainError.js';
 
 export const OTP_TTL_MINUTES = parseInt(process.env.OTP_TTL_MINUTES || '15', 10);
 const OTP_MAX_FAILED_ATTEMPTS = parseInt(process.env.OTP_MAX_FAILED_ATTEMPTS || '5', 10);
