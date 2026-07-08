@@ -136,14 +136,14 @@ app.use(requestLogger)
 // ============================================================================
 // RATE LIMITING
 // ============================================================================
-app.use('/api/', globalLimiter)
 app.use('/api/health', healthLimiter)
+app.use('/api/health', healthRoutes)
+app.use('/api/', globalLimiter)
 app.use('/api/v1/trips', tripRoutes)
 
 // ============================================================================
 // REST API ROUTING
 // ============================================================================
-app.use('/api/health', healthRoutes)
 
 app.use('/api/orders', orderRoutes)
 app.use('/api/driver', driverRoutes)
