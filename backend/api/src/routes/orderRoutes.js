@@ -736,6 +736,15 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
       return res.status(400).json({ error: 'Cannot set Delivered milestone directly. Use /verify-delivery endpoint to confirm delivery.' });
     }
 
+    const orderId = req.params.id;
+    const { milestone } = req.body;
+    const milestoneMap = {
+      'Arrived at Pickup': 'at_pickup',
+      'Goods Loaded': 'in_transit',
+      'In Transit': 'in_transit',
+      'Arrived at Drop-off': 'at_dropoff',
+      'Goods Unloaded': 'at_dropoff'
+    };
     const { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
     if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
     if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
