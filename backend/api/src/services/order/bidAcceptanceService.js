@@ -1,12 +1,8 @@
 import { ethers } from 'ethers';
+import { DomainError } from './domainError.js';
 
-export class DomainError extends Error {
-  constructor(status, payload) {
-    super(payload?.error || payload?.message || 'Domain Error');
-    this.status = status;
-    this.payload = payload;
-  }
-}
+// Re-export for backward compatibility — prefer importing from domainError.js
+export { DomainError } from './domainError.js';
 
 export class BidAcceptanceService {
   constructor({ orderRepository, buildDepositTxFn, escrowDepositFn, recordDepositTxFn, escrowRefundFn, logger, notificationDispatcher }) {
@@ -21,12 +17,14 @@ export class BidAcceptanceService {
   async acceptBid({ orderId, bidId, customerId }) {
     const orderResult = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id');
     const order = orderResult.data;
+    const { data: order } = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id');
     if (!order || order.customer_id !== customerId) {
       throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
     }
 
     const bidResult = await this.orderRepository.findBidById(bidId);
     const bid = bidResult.data;
+    const { data: bid } = await this.orderRepository.findBidById(bidId);
     if (!bid || bid.status !== 'pending') {
       throw new DomainError(404, { error: 'Bid is not active or not found.' });
     }
@@ -34,6 +32,7 @@ export class BidAcceptanceService {
     const loadOfferResult = await this.orderRepository.findLoadOfferByOrderDisplayId(order.order_display_id);
     const loadOffer = loadOfferResult.data;
     const loadOfferErr = loadOfferResult.error;
+    const { data: loadOffer, error: loadOfferErr } = await this.orderRepository.findLoadOfferByOrderDisplayId(order.order_display_id);
     if (loadOfferErr) {
       throw new DomainError(500, { error: 'Failed to verify bid ownership.', details: loadOfferErr.message });
     }
@@ -47,6 +46,7 @@ export class BidAcceptanceService {
     const [driverDetailsResult, customerProfileResult] = await Promise.all([
       this.orderRepository.findDriverDetail(bid.driver_id),
       this.orderRepository.findCustomerWallet(customerId),
+      this.orderRepository.findProfile(customerId, 'polygon_wallet_address'),
     ]);
 
     const driverWallet = driverDetailsResult.data?.polygon_wallet_address ?? null;
@@ -60,6 +60,7 @@ export class BidAcceptanceService {
     }
 
     const [profileResult, detailsResult] = await Promise.all([
+    const [{ data: profile }, { data: details }] = await Promise.all([
       this.orderRepository.findProfile(bid.driver_id, 'full_name'),
       this.orderRepository.findDriverDetailWithRating(bid.driver_id),
     ]);
@@ -70,6 +71,7 @@ export class BidAcceptanceService {
     if (details && details.truck_id) {
       const truckResult = await this.orderRepository.findTruckWithDetails(details.truck_id);
       const truckErr = truckResult.error;
+      const { data, error: truckErr } = await this.orderRepository.findTruckWithDetails(details.truck_id);
       if (truckErr) {
         this.logger?.error?.('Truck lookup error during bid accept:', truckErr.message);
       }
@@ -77,12 +79,23 @@ export class BidAcceptanceService {
     }
 
     // Build the escrow deposit transaction
-    let depositTx = null;
-    let bookingId = null;
+    let depositTx;
+    let bookingId;
     const amountWei = ethers.parseEther((bid.bid_amount / 100).toFixed(2).toString());
     const buildResult = await this.buildDepositTxFn(order.order_display_id, customerWallet, driverWallet, amountWei);
     depositTx = buildResult;
     bookingId = buildResult?.bookingId || `escrow:${order.order_display_id}`;
+
+    // Guard against silent escrow disable: if buildDepositTx returned
+    // null txData (contract not initialised), reject immediately.
+    if (!buildResult?.txData) {
+      this.logger?.error?.('[escrow] Escrow deposit tx could not be built — escrow contract is not reachable or misconfigured.');
+      throw new DomainError(502, {
+        error: 'Escrow is not configured. Escrow deposit transaction could not be built.',
+        details: 'The escrow contract is unreachable or the blockchain environment variables are not set.',
+        recovery: 'This order cannot proceed with escrow protection. Please contact support.',
+      });
+    }
 
     // Update order with escrow booking info
     const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding');
@@ -105,7 +118,6 @@ export class BidAcceptanceService {
     });
 
     if (rpcErr) {
-      // Compensating transaction: refund the escrow since RPC failed
       if (bookingId) {
         try {
           await this.escrowRefundFn(order.order_display_id);
@@ -126,14 +138,12 @@ export class BidAcceptanceService {
       });
     }
 
-    // Record the deposit transaction
     try {
-      await this.recordDepositTxFn(order.order_display_id, depositTx?.to, depositTx?.data);
+      await this.recordDepositTxFn(bookingId, depositTx?.hash || depositTx?.transactionHash || '');
     } catch (recordErr) {
       this.logger?.warn?.('[escrow] Failed to record deposit TX:', recordErr.message);
     }
 
-    // Send notifications
     if (this.notificationDispatcher) {
       try {
         await this.notificationDispatcher({
