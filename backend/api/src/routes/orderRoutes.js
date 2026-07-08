@@ -3,7 +3,9 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import crypto from 'crypto';
 
 import { bidLimiter, userLimiter, safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
-import { supabase, redisClient, mongoDb } from '../config/db.js';
+import { redisClient, mongoDb } from '../config/db.js';
+import { supabase } from '../config/db.js';
+import { OrderRepository } from '../repositories/orderRepository.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
@@ -30,34 +32,23 @@ import {
   confirmEscrowRefund,
 } from '../services/escrow.js';
 import { BidAcceptanceService, DomainError } from '../services/order/bidAcceptanceService.js';
+import { DeliveryVerificationService } from '../services/order/deliveryVerificationService.js';
 import { expireDeliveryOtps } from '../services/notificationService.js';
-import {
-  verifyDelivery,
-  generateDeliveryOtp,
-  resendDeliveryOtp,
-  sendOtpNotification,
-} from '../services/order/deliveryVerificationService.js';
 import { predictDemand, predictPrice } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
+const orderRepository = new OrderRepository(supabase);
 const bidAcceptanceService = new BidAcceptanceService({
-  supabase,
+  orderRepository,
   buildDepositTxFn: buildDepositTx,
   recordDepositTxFn: recordDepositTx,
   escrowRefundFn: escrowRefund,
   logger,
 });
-
-const bidAcceptanceService = new BidAcceptanceService({
-  supabase,
-  buildDepositTxFn: buildDepositTx,
-  recordDepositTxFn: recordDepositTx,
-  escrowRefundFn: escrowRefund,
-  logger,
-});
+const deliveryVerificationService = new DeliveryVerificationService(orderRepository);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -217,9 +208,8 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
   try {
     for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
       orderDisplayId = generateOrderDisplayId();
-      const result = await supabase
-        .from('orders')
-        .insert({
+      const result = await orderRepository
+        .createOrder({
           order_display_id: orderDisplayId,
           customer_id: req.user.id,
           status: 'pending',
@@ -234,9 +224,7 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
           total_amount: pricing.totalAmount,
           estimated_price: estimatedPrice,
           payment_method_id, upi_id
-        })
-        .select('id, order_display_id, status, created_at')
-        .single();
+        });
 
       order = result.data;
       orderErr = result.error;
@@ -261,17 +249,16 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
       { order_display_id: orderDisplayId, milestone: 'Delivered', milestone_time: null, completed: false, sort_order: 60 }
     ];
 
-    const { error: timelineErr } = await supabase.from('order_timeline').insert(milestones);
+    const { error: timelineErr } = await orderRepository.createTimeline(milestones);
 
     if (timelineErr) {
       logger.error('Timeline Insertion Error:', timelineErr.message);
-      await supabase.from('orders').delete().eq('id', order.id);
+      await orderRepository.deleteOrder(order.id);
       return res.status(500).json({ error: 'Failed to create order timeline.', details: timelineErr.message });
     }
 
-    const { error: offerErr } = await supabase
-      .from('load_offers')
-      .insert({
+    const { error: offerErr } = await orderRepository
+      .createLoadOffer({
         order_display_id: orderDisplayId,
         customer_id: req.user.id,
         customer_name: req.user.fullName || 'Customer',
@@ -291,8 +278,8 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
 
     if (offerErr) {
       logger.error('Load Offer Insertion Error:', offerErr.message);
-      await supabase.from('order_timeline').delete().eq('order_display_id', orderDisplayId);
-      await supabase.from('orders').delete().eq('id', order.id);
+      await orderRepository.deleteTimeline(orderDisplayId);
+      await orderRepository.deleteOrder(order.id);
       return res.status(500).json({ error: 'Failed to create load offer.', details: offerErr.message });
     }
 
@@ -310,18 +297,14 @@ router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), a
   const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
 
   try {
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('customer_id', req.user.id)
-      .in('status', activeStatuses)
-      .order('pickup_date', { ascending: false });
+    const { data: orders, error } = await orderRepository
+      .findOrdersByCustomer(req.user.id, '*', activeStatuses, 'pickup_date', false);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch active orders.', details: error.message });
 
     const driverIds = [...new Set(orders.filter(o => o.driver_id).map(o => o.driver_id))];
     if (driverIds.length > 0) {
-      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', driverIds);
+      const { data: profiles } = await orderRepository.findProfilesByIds(driverIds, 'id, full_name');
       const driverMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
       orders.forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
     }
@@ -338,11 +321,7 @@ router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), a
 // ============================================================================
 router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
   try {
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', false)
-      .order('created_at', { ascending: false });
+    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: false });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
     res.json(offers);
@@ -357,11 +336,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 // ============================================================================
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
   try {
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', true)
-      .order('created_at', { ascending: false });
+    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
     res.json(offers);
@@ -389,21 +364,14 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), asy
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
-
-    const { data: history, error, count } = await supabase
-      .from('orders')
-      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at', { count: 'exact' })
-      .eq('customer_id', req.user.id)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data: history, error, count } = await orderRepository
+      .findOrdersWithCount(req.user.id, 'id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at', { page, limit });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch history.', details: error.message });
 
     const driverIds = [...new Set((history || []).filter(o => o.driver_id).map(o => o.driver_id))];
     if (driverIds.length > 0) {
-      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', driverIds);
+      const { data: profiles } = await orderRepository.findProfilesByIds(driverIds, 'id, full_name');
       const driverMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
       (history || []).forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
     }
@@ -429,16 +397,9 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   try {
-    let order = null;
-    let orderErr = null;
-    const resultById = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    order = resultById.data;
-    orderErr = resultById.error;
-    if (!order && !orderErr) {
-      const resultByDisplayId = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = resultByDisplayId.data;
-      orderErr = resultByDisplayId.error;
-    }
+    const result = await orderRepository.findOrderByAnyId(orderId, '*');
+    const order = result.data;
+    const orderErr = result.error;
     if (orderErr) return res.status(500).json({ error: 'Query failed.', details: orderErr.message });
     if (!order) return res.status(404).json({ error: 'Order not found.' });
 
@@ -448,12 +409,16 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
 
     const responseOrder = { ...order };
 
-    const { data: timeline } = await supabase.from('order_timeline').select('milestone, milestone_time, completed, sort_order').eq('order_display_id', order.order_display_id).order('sort_order', { ascending: true });
+    const { data: timeline } = await orderRepository.getTimeline(order.order_display_id);
 
     let driverProfile = null;
     if (order.driver_id) {
-      const { data: profile } = await supabase.from('profiles').select('full_name, phone, avatar_url').eq('id', order.driver_id).maybeSingle();
-      const { data: details } = await supabase.from('driver_details').select('rating, total_trips').eq('user_id', order.driver_id).maybeSingle();
+      const [profileResult, detailsResult] = await Promise.all([
+        orderRepository.findProfile(order.driver_id, 'full_name, phone, avatar_url'),
+        orderRepository.findDriverDetail(order.driver_id),
+      ]);
+      const profile = profileResult.data;
+      const details = detailsResult.data;
 
       if (profile && details) {
         driverProfile = { name: profile.full_name, phone: profile.phone, avatar: profile.avatar_url, rating: details.rating, trips: details.total_trips };
@@ -477,11 +442,11 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
   try {
     let order = null;
     if (uuidRegex.test(orderId)) {
-      const { data: orderById } = await supabase.from('orders').select('customer_id, driver_id, order_display_id').eq('id', orderId).maybeSingle();
+      const { data: orderById } = await orderRepository.findOrderForTimeline(orderId);
       order = orderById;
     }
     if (!order) {
-      const { data: orderByDisplay } = await supabase.from('orders').select('customer_id, driver_id, order_display_id').eq('order_display_id', orderId).maybeSingle();
+      const { data: orderByDisplay } = await orderRepository.findOrderByDisplayForTimeline(orderId);
       order = orderByDisplay;
     }
 
@@ -491,11 +456,7 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
       return res.status(403).json({ error: 'Access Denied: You do not own or are not assigned to this order.' });
     }
 
-    const { data: timeline, error: timelineErr } = await supabase
-      .from('order_timeline')
-      .select('milestone, milestone_time, completed, sort_order')
-      .eq('order_display_id', order.order_display_id)
-      .order('sort_order', { ascending: true });
+    const { data: timeline, error: timelineErr } = await orderRepository.getTimeline(order.order_display_id);
 
     if (timelineErr) return res.status(500).json({ error: 'Failed to fetch timeline.', details: timelineErr.message });
     res.json(timeline || []);
@@ -513,24 +474,24 @@ router.post('/:id/bids', authenticate, userLimiter, requireRole(['driver']), bid
   const { bid_amount } = req.body;
 
   try {
-    const { data: offer, error: offerErr } = await supabase.from('load_offers').select('id, status, customer_id').eq('id', loadOfferId).maybeSingle();
+    const { data: offer, error: offerErr } = await orderRepository.findLoadOfferById(loadOfferId);
     if (offerErr || !offer) return res.status(404).json({ error: 'Load offer not found.' });
     if (offer.status !== 'available') return res.status(410).json({ error: 'Load is no longer available for bidding.' });
     if (offer.customer_id === req.user.id) return res.status(403).json({ error: 'You cannot bid on your own load offer' });
 
-    const { data: driverDetails, error: driverDetailsErr } = await supabase.from('driver_details').select('truck_id').eq('user_id', req.user.id).maybeSingle();
+    const { data: driverDetails, error: driverDetailsErr } = await orderRepository.findDriverDetailMinimal(req.user.id);
     if (driverDetailsErr) return res.status(500).json({ error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
     if (!driverDetails?.truck_id) return res.status(400).json({ error: 'You must assign a valid truck to your profile before bidding on loads' });
 
-    const { data: truck, error: truckErr } = await supabase.from('trucks').select('id').eq('id', driverDetails.truck_id).maybeSingle();
+    const { data: truck, error: truckErr } = await orderRepository.findTruckById(driverDetails.truck_id);
     if (truckErr) return res.status(500).json({ error: 'Failed to verify assigned truck.', details: truckErr.message });
     if (!truck) return res.status(400).json({ error: 'Assigned truck record could not be found' });
 
-    const { data: existingBid, error: existingBidErr } = await supabase.from('load_bids').select('id').eq('load_id', loadOfferId).eq('driver_id', req.user.id).eq('status', 'pending').maybeSingle();
+    const { data: existingBid, error: existingBidErr } = await orderRepository.findExistingBid(loadOfferId, req.user.id, 'pending');
     if (existingBidErr) return res.status(500).json({ error: 'Failed to verify existing bids.', details: existingBidErr.message });
     if (existingBid) return res.status(409).json({ error: 'You already have a pending bid for this load.' });
 
-    const { data: bid, error: bidErr } = await supabase.from('load_bids').insert({ load_id: loadOfferId, driver_id: req.user.id, bid_amount, status: 'pending' }).select('*').single();
+    const { data: bid, error: bidErr } = await orderRepository.createBid({ load_id: loadOfferId, driver_id: req.user.id, bid_amount, status: 'pending' });
     if (bidErr) return res.status(500).json({ error: 'Failed to record bid.', details: bidErr.message });
 
     res.status(201).json({ message: 'Bid submitted successfully.', bid });
@@ -548,11 +509,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
   const { stars, comment = null } = req.body;
 
   try {
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select('id, order_display_id, customer_id, driver_id, status')
-      .eq('id', orderId)
-      .maybeSingle();
+    const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId, 'id, order_display_id, customer_id, driver_id, status');
 
     if (orderErr) {
       return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
@@ -574,12 +531,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
       return res.status(400).json({ error: 'Order does not have an assigned driver.' });
     }
 
-    const { data: existingRating, error: ratingCheckErr } = await supabase
-      .from('ratings')
-      .select('id')
-      .eq('order_display_id', order.order_display_id)
-      .eq('customer_id', req.user.id)
-      .maybeSingle();
+    const { data: existingRating, error: ratingCheckErr } = await orderRepository.findRatingByOrder(order.order_display_id, req.user.id);
 
     if (ratingCheckErr) {
       return res.status(500).json({ error: 'Failed to verify existing rating.', details: ratingCheckErr.message });
@@ -589,7 +541,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
       return res.status(409).json({ error: 'A rating has already been submitted for this order.' });
     }
 
-    const { data: ratingData, error: rpcErr } = await supabase.rpc('submit_rating_tx', {
+    const { data: ratingData, error: rpcErr } = await orderRepository.executeRpc('submit_rating_tx', {
       p_order_display_id: order.order_display_id,
       p_customer_id: req.user.id,
       p_driver_id: order.driver_id,
@@ -604,11 +556,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
     // Fetch driver's registered Polygon wallet address for on-chain reputation update.
     // This is intentionally fire-and-forget — a blockchain failure must never block
     // the HTTP response. The Supabase rating is the source of truth.
-    const { data: driverDetails } = await supabase
-      .from('driver_details')
-      .select('polygon_wallet_address')
-      .eq('user_id', order.driver_id)
-      .maybeSingle();
+    const { data: driverDetails } = await orderRepository.findDriverWallet(order.driver_id);
 
     const polygonAddress = driverDetails?.polygon_wallet_address ?? null;
 
@@ -616,7 +564,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
       // Fire-and-forget: blockchain confirmation must never block the HTTP response.
       void awardReputationPoints(polygonAddress, stars).catch((repErr) => {
         logger.error('[reputation] On-chain reputation update failed:', repErr.message);
-        supabase.from('reputation_failures').insert({
+        orderRepository.insertReputationFailure({
           driver_wallet: polygonAddress,
           stars,
           rating_id: ratingData?.id ?? null,
@@ -654,26 +602,26 @@ router.get('/:id/bids', authenticate, userLimiter, requireRole(['customer']), va
   const orderId = req.params.id;
 
   try {
-    const { data: order } = await supabase.from('orders').select('order_display_id, customer_id').eq('id', orderId).maybeSingle();
+    const { data: order } = await orderRepository.findOrderById(orderId, 'order_display_id, customer_id');
     if (!order || order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
 
-    const { data: offer } = await supabase.from('load_offers').select('id').eq('order_display_id', order.order_display_id).maybeSingle();
+    const { data: offer } = await orderRepository.findLoadOfferByOrderDisplayId(order.order_display_id);
     if (!offer) return res.json([]);
 
-    const { data: bids, error: bidErr } = await supabase.from('load_bids').select('*').eq('load_id', offer.id).eq('status', 'pending').order('bid_amount', { ascending: true });
+    const { data: bids, error: bidErr } = await orderRepository.findBidsByLoad(offer.id, 'pending', { orderBy: 'bid_amount', ascending: true });
     if (bidErr) return res.status(500).json({ error: 'Query failed.', details: bidErr.message });
     if (!bids || bids.length === 0) return res.json([]);
 
     const driverIds = bids.map(b => b.driver_id);
     const [profilesRes, detailsRes] = await Promise.all([
-      supabase.from('profiles').select('id, full_name, avatar_url, phone').in('id', driverIds),
-      supabase.from('driver_details').select('user_id, rating, total_trips, completion_rate, truck_id').in('user_id', driverIds)
+      orderRepository.findProfilesByIds(driverIds, 'id, full_name, avatar_url, phone'),
+      orderRepository.findDriverDetails(driverIds)
     ]);
 
     const profiles = profilesRes.data || [];
     const details  = detailsRes.data || [];
     const truckIds = details.map(d => d.truck_id).filter(Boolean);
-    const trucksRes = truckIds.length > 0 ? await supabase.from('trucks').select('id, name, number_plate').in('id', truckIds) : { data: [] };
+    const trucksRes = truckIds.length > 0 ? await orderRepository.findTrucksByIds(truckIds) : { data: [] };
     const trucks = trucksRes.data || [];
 
     const profileMap = Object.fromEntries(profiles.map(p => [p.id, p]));
@@ -738,15 +686,11 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
       'Arrived at Drop-off': 'at_dropoff',
       'Goods Unloaded': 'at_dropoff'
     };
-    const { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
+    const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId, '*');
     if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
     if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
 
-    const { data: timeline, error: tlErr } = await supabase
-      .from('order_timeline')
-      .select('milestone, sort_order, completed')
-      .eq('order_display_id', order.order_display_id)
-      .order('sort_order', { ascending: true });
+    const { data: timeline, error: tlErr } = await orderRepository.getTimelineWithSortCheck(order.order_display_id);
     if (tlErr) return res.status(500).json({ error: 'Failed to fetch order timeline.' });
 
     const canonicalMilestones = new Set([...Object.keys(milestoneMap), 'Order Placed', 'Delivered']);
@@ -772,26 +716,22 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
     let generatedOtp = null;
 
     if (milestone === 'In Transit') {
-      const result = await generateDeliveryOtp({ orderId });
+      const result = await deliveryVerificationService.generateDeliveryOtp({ orderId });
       generatedOtp = result.otp;
     }
 
-    const { error: timelineErr } = await supabase.from('order_timeline').update({ completed: true, milestone_time: new Date().toISOString() }).eq('order_display_id', order.order_display_id).eq('milestone', milestone);
+    const { error: timelineErr } = await orderRepository.updateTimelineMilestone(order.order_display_id, milestone, { completed: true, milestone_time: new Date().toISOString() });
     if (timelineErr) return res.status(500).json({ error: 'Failed to update order timeline.', details: timelineErr.message });
 
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders').update(updates).eq('id', orderId).select('*').single();
+    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(orderId, updates);
     if (updateErr) {
       // Roll back the timeline mark since the order update failed
-      await supabase
-        .from('order_timeline')
-        .update({ completed: false, milestone_time: null })
-        .eq('order_display_id', order.order_display_id)
-        .eq('milestone', milestone);
+      await orderRepository.updateTimelineMilestone(order.order_display_id, milestone, { completed: false, milestone_time: null });
       return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
     }
 
     if (generatedOtp) {
-      await sendOtpNotification({ orderId, customerId: order.customer_id, orderDisplayId: order.order_display_id, otp: generatedOtp });
+      await deliveryVerificationService.sendOtpNotification({ orderId, customerId: order.customer_id, orderDisplayId: order.order_display_id, otp: generatedOtp });
     }
 
     const response = { message: 'Milestone updated successfully.', order: updatedOrder, milestone, status };
@@ -813,7 +753,7 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['dri
   const { otp } = req.body;
 
   try {
-    const { escrowUpdateFailed } = await verifyDelivery({
+    const { escrowUpdateFailed } = await deliveryVerificationService.verifyDelivery({
       orderId,
       driverId: req.user.id,
       otp,
@@ -844,11 +784,11 @@ router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requ
   const orderId = req.params.id;
 
   try {
-    const { data: order, error: orderErr } = await supabase.from('orders').select('id, order_display_id, driver_id, customer_id, status').eq('id', orderId).maybeSingle();
+    const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, status');
     if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
     if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
 
-    const { expiresInMinutes } = await resendDeliveryOtp({
+    const { expiresInMinutes } = await deliveryVerificationService.resendDeliveryOtp({
       orderId,
       customerId: order.customer_id,
       orderDisplayId: order.order_display_id,
@@ -873,12 +813,9 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
   const { drop_address, drop_lat, drop_lng } = req.body;
 
   try {
-    let { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (!order && !orderErr) {
-      const result = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = result.data;
-      orderErr = result.error;
-    }
+    const orderResult = await orderRepository.findOrderByAnyId(orderId, '*');
+    const order = orderResult.data;
+    const orderErr = orderResult.error;
     if (orderErr) return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
     if (!order) return res.status(404).json({ error: 'Order not found.' });
     if (order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
@@ -928,30 +865,27 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders').update(updates).eq('id', order.id).select('*').single();
+    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(order.id, updates);
     if (updateErr) return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
 
-    const { error: offerUpdateErr } = await supabase
-      .from('load_offers')
-      .update({
-        drop_address,
-        drop_lat: Number(drop_lat),
-        drop_lng: Number(drop_lng),
-        route_label: `${(order.pickup_address || '').split(',')[0]} → ${drop_address.split(',')[0]}`,
-        freight_value: pricing.totalAmount,
-        fuel_cost: pricing.fuelCost,
-        toll_cost: pricing.tollEstimate,
-        net_profit: pricing.netProfit,
-        extra_distance_km: pricing.distanceKm,
-      })
-      .eq('order_display_id', order.order_display_id);
+    const { error: offerUpdateErr } = await orderRepository.updateLoadOffer(order.order_display_id, {
+      drop_address,
+      drop_lat: Number(drop_lat),
+      drop_lng: Number(drop_lng),
+      route_label: `${(order.pickup_address || '').split(',')[0]} → ${drop_address.split(',')[0]}`,
+      freight_value: pricing.totalAmount,
+      fuel_cost: pricing.fuelCost,
+      toll_cost: pricing.tollEstimate,
+      net_profit: pricing.netProfit,
+      extra_distance_km: pricing.distanceKm,
+    });
 
     if (offerUpdateErr) {
       logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
     }
 
     try {
-      await supabase.from('order_timeline').insert({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
+      await orderRepository.insertTimelineEntry({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
     } catch (timelineErr) {
       logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
     }
@@ -982,24 +916,15 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
   const { reason = null } = req.body || {};
 
   try {
-    let { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (!order && !orderErr) {
-      const result = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = result.data;
-      orderErr = result.error;
-    }
+    const orderResult = await orderRepository.findOrderByAnyId(orderId, '*');
+    const order = orderResult.data;
+    const orderErr = orderResult.error;
     if (orderErr) return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
     if (!order) return res.status(404).json({ error: 'Order not found.' });
     if (order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
 
     // Prevent cancellation if delivery OTP was already verified
-    const { data: otpCheck, error: otpCheckErr } = await supabase
-      .from('delivery_otps')
-      .select('id')
-      .eq('order_id', order.id)
-      .eq('verified', true)
-      .limit(1)
-      .maybeSingle();
+    const { data: otpCheck, error: otpCheckErr } = await orderRepository.findVerifiedDeliveryOtp(order.id);
 
     if (!otpCheckErr && otpCheck) {
       return res.status(409).json({ error: 'Cannot cancel: delivery OTP has already been verified.' });
@@ -1020,9 +945,9 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
     // refund must never leave the order available for continued work.
     if (requiresRefund && (order.status !== 'cancelled' || order.escrow_status !== 'refund_pending')) {
       const attemptAt = new Date().toISOString();
-      const { data: pendingOrder, error: pendingErr } = await supabase
-        .from('orders')
-        .update({
+      const { data: pendingOrder, error: pendingErr } = await orderRepository.updateOrderWithFilter(
+        order.id,
+        {
           status: 'cancelled',
           cancellation_reason: reason ?? order.cancellation_reason,
           escrow_status: 'refund_pending',
@@ -1030,11 +955,11 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
           escrow_refund_attempts: (order.escrow_refund_attempts ?? 0) + 1,
           escrow_refund_last_attempt_at: attemptAt,
           updated_at: attemptAt,
-        })
-        .eq('id', order.id)
-        .not('status', 'in', '("delivered","payment_released")')
-        .select('*')
-        .single();
+        },
+        [
+          { op: 'not', column: 'status', operator: 'in', value: '("delivered","payment_released")' },
+        ]
+      );
 
       if (pendingErr) {
         if (pendingErr.code === 'PGRST116') {
@@ -1071,15 +996,15 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
             }
 
             const submittedAt = new Date().toISOString();
-            const { error: hashErr } = await supabase
-              .from('orders')
-              .update({
+            const { error: hashErr } = await orderRepository.updateOrderSelective(
+              order.id,
+              {
                 refund_tx_hash: refundTxHash,
                 escrow_refund_submitted_at: submittedAt,
                 updated_at: submittedAt,
-              })
-              .eq('id', order.id)
-              .eq('escrow_status', 'refund_pending');
+              },
+              '*'
+            );
 
             if (hashErr) {
               logger.error('[escrow] Failed to persist refund tx hash for order', orderId, ':', hashErr.message);
@@ -1088,9 +1013,9 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
           }
 
           const refundedAt = new Date().toISOString();
-          const { data: updatedOrder, error: updateErr } = await supabase
-            .from('orders')
-            .update({
+          const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrderWithFilter(
+            order.id,
+            {
               status: 'cancelled',
               cancellation_reason: reason ?? workingOrder.cancellation_reason,
               escrow_status: 'refunded',
@@ -1098,11 +1023,12 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
               escrow_refunded_at: refundedAt,
               escrow_refund_error: null,
               updated_at: refundedAt,
-            })
-            .eq('id', order.id)
-            .in('escrow_status', ['refund_pending', 'refund_failed'])
-            .select('cancellation_fee, order_display_id, status, cancellation_reason, escrow_status, refund_tx_hash')
-            .single();
+            },
+            [
+              { op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] },
+            ],
+            'cancellation_fee, order_display_id, status, cancellation_reason, escrow_status, refund_tx_hash'
+          );
 
           if (updateErr) {
             logger.error('[escrow] Refund confirmed but final order update failed for', orderId, ':', updateErr.message);
@@ -1114,9 +1040,7 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
             });
           }
 
-          await supabase.from('order_timeline').update({ completed: true, milestone_time: refundedAt })
-            .eq('order_display_id', order.order_display_id)
-            .eq('milestone', 'Order Placed');
+          await orderRepository.updateTimelineMilestone(order.order_display_id, 'Order Placed', { completed: true, milestone_time: refundedAt });
 
           await expireDeliveryOtps(order.id);
 
@@ -1129,14 +1053,14 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
           logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
           const failedAt = new Date().toISOString();
           const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
-          await supabase.from('orders').update({
+          await orderRepository.updateOrder(order.id, {
             status: 'cancelled',
             escrow_status: nextEscrowStatus,
             refund_tx_hash: refundTxHash,
             escrow_refund_error: String(refundErr.message || refundErr).slice(0, 1000),
             escrow_refund_last_attempt_at: failedAt,
             updated_at: failedAt,
-          }).eq('id', order.id);
+          });
 
           return res.status(202).json({
             message: 'Order cancelled. Escrow refund requires reconciliation.',
@@ -1158,12 +1082,15 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders')
-      .update(updatePayload)
-      .eq('id', order.id)
-      .not('status', 'in', '("delivered","payment_released","cancelled")')
-      .select('cancellation_fee, order_display_id, status, cancellation_reason, escrow_status')
-      .single();
+    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrderWithFilter(
+      order.id,
+      updatePayload,
+      [
+        { op: 'not', column: 'status', operator: 'in', value: '("delivered","payment_released","cancelled")' },
+      ],
+      'cancellation_fee, order_display_id, status, cancellation_reason, escrow_status'
+    );
+
     if (updateErr) {
       if (updateErr.code === 'PGRST116') {
         return res.status(409).json({ error: 'Order was already cancelled, delivered, or payment released. Cannot cancel.' });
@@ -1173,9 +1100,7 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
 
     const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
 
-    await supabase.from('order_timeline').update({ completed: true, milestone_time: new Date().toISOString() })
-      .eq('order_display_id', order.order_display_id)
-      .eq('milestone', 'Order Placed');
+    await orderRepository.updateTimelineMilestone(order.order_display_id, 'Order Placed', { completed: true, milestone_time: new Date().toISOString() });
 
     await expireDeliveryOtps(order.id);
 
@@ -1207,11 +1132,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
   }
 
   try {
-    const { data: order, error: fetchErr } = await supabase
-      .from('orders')
-      .select('id, order_display_id, customer_id, escrow_booking_id, escrow_status')
-      .eq('id', orderId)
-      .maybeSingle();
+    const { data: order, error: fetchErr } = await orderRepository.findOrderById(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status');
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
     if (order.customer_id !== req.user.id) {
@@ -1221,11 +1142,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
       return res.status(400).json({ error: 'Order is not in funding state' });
     }
 
-    const { data: customerProfile } = await supabase
-      .from('profiles')
-      .select('polygon_wallet_address')
-      .eq('id', req.user.id)
-      .maybeSingle();
+    const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
 
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
@@ -1234,11 +1151,11 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
 
     if (result.error) return res.status(422).json({ error: result.error });
 
-    const { error: updateErr } = await supabase.from('orders').update({
+    const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
       deposit_tx_hash: result.txHash,
       escrow_deposited_at: new Date().toISOString(),
-    }).eq('id', orderId).eq('escrow_status', 'funding');
+    }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
       logger.error('[confirm-deposit] DB update failed:', updateErr.message);
