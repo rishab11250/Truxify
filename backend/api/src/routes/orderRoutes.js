@@ -53,6 +53,7 @@ import {
 } from '../services/order/deliveryVerificationService.js';
 import { predictDemand, predictPrice } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
+import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
 import { OrderRepository } from '../repositories/orderRepository.js';
 import { OrderTimelineService } from '../services/order/orderTimelineService.js';
