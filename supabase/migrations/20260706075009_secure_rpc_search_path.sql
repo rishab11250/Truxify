@@ -151,6 +151,7 @@ DECLARE
   v_load_status text;
   v_order_status text;
   v_current_version int;
+  v_customer_id uuid;
 BEGIN
   SELECT status INTO v_load_status
     FROM load_offers
@@ -161,13 +162,17 @@ BEGIN
     RAISE EXCEPTION 'Load offer is no longer available';
   END IF;
 
-  SELECT status, version INTO v_order_status, v_current_version
+  SELECT status, version, customer_id INTO v_order_status, v_current_version, v_customer_id
     FROM orders
     WHERE id = p_order_id
     FOR UPDATE;
 
   IF v_order_status IS NULL OR v_order_status <> 'pending' THEN
     RAISE EXCEPTION 'Order is no longer pending';
+  END IF;
+
+  IF auth.uid() <> v_customer_id THEN
+    RAISE EXCEPTION 'Not authorized to accept bids for this order';
   END IF;
 
   IF v_current_version != p_expected_version THEN
