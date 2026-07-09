@@ -154,7 +154,7 @@ const changeDropLimiter = rateLimit({
 // ============================================================================
 // 1. CREATE AN ORDER (CUSTOMER)
 // ============================================================================
-router.post('/', authenticate, userLimiter, requireRole(['customer']), validateBody(createOrderSchema), async (req, res) => {
+router.post('/', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateBody(createOrderSchema), async (req, res) => {
   const {
     pickup_address, pickup_lat, pickup_lng,
     drop_address, drop_lat, drop_lng,
@@ -767,7 +767,7 @@ const bidAcceptanceService = new BidAcceptanceService({
   logger
 });
 
-router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), validateParams(acceptBidParamsSchema), async (req, res) => {
+router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateParams(acceptBidParamsSchema), async (req, res) => {
   try {
     const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.status(result.status).json(result.body);
@@ -1058,7 +1058,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
 // ============================================================================
 // 16. CANCEL ORDER AND REFUND ESCROW (CUSTOMER)
 // ============================================================================
-router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
+router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
   try {
     const orderResult = await orderRepository.findOrderByAnyId(orderId, '*');
     const order = orderResult.data;
