@@ -23,10 +23,9 @@ import { OrderTimelineService } from './orderTimelineService.js';
 const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
 export class OrderMilestoneService {
-  constructor(orderRepository) {
-    this.orderRepository = orderRepository;
-  constructor({ orderValidationService } = {}) {
-    this.validation = orderValidationService;
+  constructor(args = {}) {
+    if (args.orderRepository) this.orderRepository = args.orderRepository;
+    if (args.orderValidationService) this.validation = args.orderValidationService;
   }
 
   async updateMilestone({ orderId, milestone, driverId }) {
