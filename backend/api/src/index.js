@@ -9,10 +9,8 @@ import tripRoutes from './routes/tripRoutes.js'
 import deviceRoutes from './routes/deviceRoutes.js'
 import documentRoutes from './routes/documentRoutes.js'
 
-import { closeDbConnections, waitForMongoDb, validateConfig, supabase } from './config/db.js'
-import { OrderRepository } from './repositories/orderRepository.js'
-
-const orderRepository = new OrderRepository(supabase)
+import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js'
+import { orderRepository } from './core/container.js'
 import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
@@ -34,11 +32,8 @@ import logger from './middleware/logger.js'
 import { setupSwagger } from './config/swagger.js'
 import { correlationIdMiddleware } from './middleware/correlationId.js'
 import { requestIdMiddleware, requestLogger } from './middleware/requestId.js'
-<<<<<<< feature/request-scoped-order-cache
 import { requestCacheMiddleware } from './middleware/requestCacheMiddleware.js'
-=======
 import { requireJsonContent } from './middleware/contentType.js'
->>>>>>> main
 import { initSentry, flushSentry, sentryErrorHandler } from './middleware/sentry.js'
 import {
   startEscrowRefundReconciliation,

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { supabase } from '../../config/db.js';
+import { supabase as defaultSupabase } from '../../config/db.js';
 import { getRouteEstimate } from '../osrm.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { predictPrice } from '../ml.js';
@@ -14,7 +14,7 @@ function generateOrderDisplayId() {
   return `${prefix}${dateStr}${random}`;
 }
 
-export async function createOrder({ orderData, userId, user }) {
+export async function createOrder({ orderData, userId, user, supabase = defaultSupabase }) {
   const {
     pickup_address, pickup_lat, pickup_lng,
     drop_address, drop_lat, drop_lng,
