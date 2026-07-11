@@ -154,7 +154,7 @@ const changeDropLimiter = rateLimit({
 // ============================================================================
 // 1. CREATE AN ORDER (CUSTOMER)
 // ============================================================================
-router.post('/', authenticate, userLimiter, requireRole(['customer']), validateBody(createOrderSchema), async (req, res) => {
+router.post('/', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateBody(createOrderSchema), async (req, res) => {
   const {
     pickup_address, pickup_lat, pickup_lng,
     drop_address, drop_lat, drop_lng,
@@ -221,8 +221,6 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
   try {
     for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
       orderDisplayId = generateOrderDisplayId();
-      const result = await orderRepository
-        .createOrder({
       const result = await supabase
         .from('orders')
         .insert({
@@ -240,7 +238,6 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
           total_amount: pricing.totalAmount,
           estimated_price: estimatedPrice,
           payment_method_id, upi_id
-        });
         })
         .select('id, order_display_id, status, created_at')
         .single();
@@ -371,16 +368,11 @@ router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), a
 router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-  const from = (page - 1) * limit;
-  const to = page * limit - 1;
   try {
-    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: false });
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', false)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data: offers, error } = await orderRepository.findLoadOffers(
+      { is_en_route: false },
+      { pagination: { page, limit } }
+    );
 
     if (error) return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
     res.json(offers);
@@ -396,16 +388,11 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-  const from = (page - 1) * limit;
-  const to = page * limit - 1;
   try {
-    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: true });
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', true)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data: offers, error } = await orderRepository.findLoadOffers(
+      { is_en_route: true },
+      { pagination: { page, limit } }
+    );
 
     if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
     res.json(offers);
@@ -520,7 +507,7 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
 
   try {
     let order = null;
-    if (uuidRegex.test(orderId)) {
+    if (UUID_RE.test(orderId)) {
       const { data: orderById } = await orderRepository.findOrderForTimeline(orderId);
       order = orderById;
     }
@@ -767,7 +754,7 @@ const bidAcceptanceService = new BidAcceptanceService({
   logger
 });
 
-router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), validateParams(acceptBidParamsSchema), async (req, res) => {
+router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateParams(acceptBidParamsSchema), async (req, res) => {
   try {
     const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.status(result.status).json(result.body);
@@ -1058,7 +1045,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
 // ============================================================================
 // 16. CANCEL ORDER AND REFUND ESCROW (CUSTOMER)
 // ============================================================================
-router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
+router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
   try {
     const orderResult = await orderRepository.findOrderByAnyId(orderId, '*');
     const order = orderResult.data;
@@ -1254,18 +1241,6 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
     await expireDeliveryOtps(order.id);
 
     return res.json({ message: 'Order cancelled successfully.', cancellation_fee: cancellationFee, order: updatedOrder });
-    if (result.status === 202) {
-      return res.status(202).json(result.body);
-    }
-
-    const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
-
-    await orderTimelineService.completeOrderPlacedMilestone(order.order_display_id);
-
-    await expireDeliveryOtps(order.id);
-
-    return res.json({ message: 'Order cancelled successfully.', cancellation_fee: cancellationFee, order: updatedOrder });
-    return res.json(result.body);
   } catch (err) {
     if (err instanceof DomainError) {
       return res.status(err.status).json(err.payload);
@@ -1285,14 +1260,10 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
   const { txHash } = req.body;
 
   const lockKey = `deposit_lock:${orderId}`;
-  const lockTimeoutMs = 10000;
   let lockValue = null;
-  if (redisClient) {
-    lockValue = crypto.randomUUID();
-    const acquired = await redisClient.set(lockKey, lockValue, 'PX', lockTimeoutMs, 'NX');
-    if (!acquired) {
-      return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
-    }
+  lockValue = await acquireLock(lockKey, 10000);
+  if (!lockValue) {
+    return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
   }
 
   try {
@@ -1301,6 +1272,10 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
     if (order.customer_id !== req.user.id) {
       return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
+    }
+    // Pre-check: if already funded (crash recovery), return success idempotently
+    if (order.escrow_status === 'funded') {
+      return res.json({ message: 'Escrow already confirmed.', txHash: order.deposit_tx_hash });
     }
     if (order.escrow_status !== 'funding') {
       return res.status(400).json({ error: 'Order is not in funding state' });
@@ -1317,7 +1292,21 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
     const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
     const result = await recordDepositTx(bookingId, txHash, customerWallet);
 
-    if (result.error) return res.status(422).json({ error: result.error });
+    if (result.error) {
+      // If already funded on-chain but DB missed it, treat as success
+      if (result.alreadyFunded) {
+        const { error: updateErr } = await supabase.from('orders').update({
+          escrow_status: 'funded',
+          deposit_tx_hash: result.txHash,
+          escrow_deposited_at: new Date().toISOString(),
+        }).eq('id', orderId).eq('escrow_status', 'funding');
+
+        if (!updateErr) {
+          return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
+        }
+      }
+      return res.status(422).json({ error: result.error });
+    }
 
     const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
@@ -1338,20 +1327,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['cus
     logger.error('[confirm-deposit] Exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   } finally {
-    if (redisClient && lockValue) {
-      const luaScript = `
-        if redis.call('GET', KEYS[1]) == ARGV[1] then
-          redis.call('DEL', KEYS[1])
-          return 1
-        end
-        return 0
-      `;
-      try {
-        await redisClient.eval(luaScript, 1, lockKey, lockValue);
-      } catch (err) {
-        logger.warn('[confirm-deposit] Failed to release deposit lock for key %s: %s', lockKey, err.message);
-      }
-    }
+    await releaseLock(lockKey, lockValue);
   }
 });
 
