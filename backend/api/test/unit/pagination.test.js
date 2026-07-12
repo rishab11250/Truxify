@@ -109,6 +109,19 @@ describe('Pagination Middleware', () => {
     expect(res.json).toHaveBeenCalledWith({ error: 'Invalid limit parameter' });
   });
 
+  it('returns 400 for partially numeric limit values', () => {
+    const middleware = validatePagination();
+    const req = { query: { limit: '10abc' } };
+    const res = mockResponse();
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid limit parameter' });
+  });
+
   it('calculates offset correctly from page parameter', () => {
     const middleware = validatePagination();
     const req = { query: { limit: '20', page: '3' } };
