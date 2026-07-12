@@ -196,8 +196,8 @@ class MarketplaceRepository {
             final newRecord = payload.newRecord;
             if (newRecord.isNotEmpty) {
               final offer = _mapLoadOffer(newRecord);
-              if (!controller.add(offer)) {
-                developer.log('No active subscribers, dropping load offer');
+              if (!controller.isClosed) {
+                controller.add(offer);
               }
             }
           } catch (e, st) {
