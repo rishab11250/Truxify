@@ -82,6 +82,7 @@ services:
       retries: 5
       start_period: 30s
 
+
   db:
     image: postgis/postgis:15-3.3-alpine
     environment:
@@ -179,6 +180,7 @@ services:
       retries: 5
       start_period: 10s
 
+
   mongo:
     image: mongo:6-jammy
     ports:
@@ -198,6 +200,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
 
   redis:
     image: redis:7-alpine
