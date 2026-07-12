@@ -1,8 +1,7 @@
-import { supabase, redisClient } from '../config/db.js';
+import { redisClient } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { confirmEscrowRefund, submitEscrowRefund } from './escrow.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
-import { OrderRepository } from '../repositories/orderRepository.js';
 import os from 'os';
 
 const RECONCILIATION_EVENTS = {
@@ -35,11 +34,12 @@ const MAX_RETRIES = 10;
 let reconciliationTimer = null;
 let reconciliationRunning = false;
 
-export async function reconcilePendingEscrowRefunds(passedOrderRepository) {
+export async function reconcilePendingEscrowRefunds(orderRepository) {
+  if (!orderRepository) {
+    throw new Error('reconcilePendingEscrowRefunds requires an OrderRepository instance');
+  }
   if (reconciliationRunning) return;
   reconciliationRunning = true;
-
-  const orderRepository = passedOrderRepository || new OrderRepository(supabase);
 
   try {
     // Acquire a global lock just to prevent multiple instances from pulling the exact same batch unnecessarily
