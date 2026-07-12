@@ -545,6 +545,8 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
 // ============================================================================
 router.post('/:id/bids', authenticate, userLimiter, requirePolicy('bid:submit'), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
   try {
+    const loadOfferId = req.params.id;
+    const { bid_amount } = req.body;
     const { data: offer, error: offerErr } = await orderRepository.findLoadOfferById(loadOfferId);
     if (offerErr || !offer) return res.status(404).json({ error: 'Load offer not found.' });
     if (offer.status !== 'available') return res.status(410).json({ error: 'Load is no longer available for bidding.' });
