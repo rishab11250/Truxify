@@ -24,9 +24,15 @@ async function getCachedOrFetch(key, fetchFn) {
     try {
       const cached = await redisClient.get(key);
       if (cached) {
-        const data = JSON.parse(cached);
-        l1Cache.set(key, { data, expiresAt: now + L1_TTL });
-        return data;
+        try {
+          const data = JSON.parse(cached);
+          if (data !== null) {
+            l1Cache.set(key, { data, expiresAt: now + L1_TTL });
+            return data;
+          }
+        } catch {
+          // fall through to fetch on malformed cached payload
+        }
       }
     } catch (err) {
       logger.error({ err, key }, 'Redis cache get error');
