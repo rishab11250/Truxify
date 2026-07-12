@@ -79,7 +79,7 @@ class LocationService {
         .whereType<LocationSuggestion>()
         .toList();
 
-    _cacheSearch(trimmed, results);
+    _cacheSearch(cacheKey, results);
     return results;
   }
 
