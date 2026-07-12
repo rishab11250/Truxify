@@ -6,6 +6,13 @@ class TruckRepository {
   TruckRepository({SupabaseClient? client})
       : _client = client ?? Supabase.instance.client;
 
+  static const Set<String> _allowedTicketStatuses = {
+    'open',
+    'in_progress',
+    'resolved',
+    'closed',
+  };
+
   final SupabaseClient _client;
 
   Future<Truck?> fetchTruckForDriver(String driverId) async {
@@ -61,9 +68,14 @@ class TruckRepository {
     required String status,
     String? resolutionNotes,
   }) async {
-    final update = <String, dynamic>{'status': status};
+    final normalizedStatus = status.trim().toLowerCase();
+    if (!_allowedTicketStatuses.contains(normalizedStatus)) {
+      throw ArgumentError.value(status, 'status', 'unsupported ticket status');
+    }
+
+    final update = <String, dynamic>{'status': normalizedStatus};
     if (resolutionNotes != null) update['resolution_notes'] = resolutionNotes;
-    if (status == 'resolved' || status == 'closed') {
+    if (normalizedStatus == 'resolved' || normalizedStatus == 'closed') {
       update['resolved_at'] = DateTime.now().toIso8601String();
     }
     final response = await _client
