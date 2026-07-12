@@ -88,6 +88,9 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
 
     constructor() Ownable(msg.sender) {}
 
+    receive() external payable {}
+    fallback() external payable {}
+
     // ─── External Functions ──────────────────────────────────────────────────
 
     /**
@@ -186,6 +189,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             "TruxifyEscrow: Cannot cancel - booking not active"
         );
         require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(booking.amount > 0, "TruxifyEscrow: Nothing to refund");
 
         // ── EFFECTS ───────────────────────────────────────────────────────
         uint256 refundAmount    = booking.amount;

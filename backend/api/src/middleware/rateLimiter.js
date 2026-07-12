@@ -72,10 +72,6 @@ class DeferredRedisStore {
   }
 }
 
-function buildStore(prefix) {
-  return new DeferredRedisStore(prefix);
-}
-
 /**
  * Generates a rate-limit key from the proxy-resolved IP address.
  *
@@ -85,7 +81,12 @@ function buildStore(prefix) {
  * into one rate-limit bucket.
  */
 export function safeIpKeyGenerator(req) {
-  return req.ip || req.socket?.remoteAddress || 'unknown';
+  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+  if (typeof ip === 'string') {
+    ip = ip.replace(/^::ffff:/, '');
+    if (ip === '::1') ip = '127.0.0.1';
+  }
+  return ip;
 }
 
 /**
@@ -110,7 +111,7 @@ export const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  store: buildStore('rl:global:'),
+  store: createStore('rl:global:'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
   skip: (req) => req.path === '/health' || req.path.startsWith('/health/'),
 });
@@ -124,7 +125,7 @@ export const userLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
-  store: buildStore('rl:user:'),
+  store: createStore('rl:user:'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });
 
@@ -134,7 +135,7 @@ export const healthLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  store: buildStore('rl:health:'),
+  store: createStore('rl:health:'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
 });
 
@@ -144,7 +145,7 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  store: buildStore('rl:auth:'),
+  store: createStore('rl:auth:'),
   message: { error: 'Rate limit exceeded', retryAfter: 3600 },
 });
 
@@ -154,7 +155,7 @@ export const bidLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
-  store: buildStore('rl:bid:'),
+  store: createStore('rl:bid:'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
 });
 
@@ -168,8 +169,17 @@ export const deviceLimiter = rateLimit({
     if (req.user?.uid) return `uid:${req.user.uid}`;
     return safeIpKeyGenerator(req);
   },
-  store: buildStore('rl:device:'),
+  store: createStore('rl:device:'),
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
 });
+
+/**
+ * Factory that creates a DeferredRedisStore — used by both the built-in
+ * limiters in this module and by route-level limiters (orderRoutes,
+ * driverRoutes) that need Redis-backed shared state across instances.
+ */
+export function createStore(prefix) {
+  return new DeferredRedisStore(prefix);
+}
 
 export const __testing = { DeferredRedisStore, isRedisReady };

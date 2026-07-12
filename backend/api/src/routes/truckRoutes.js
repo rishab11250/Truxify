@@ -1,13 +1,33 @@
 import express from 'express';
-import { supabase } from '../config/db.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { supabase, mongoDb } from '../config/db.js';
+import { authenticate } from '../middleware/auth.js';
+import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
-import { paramIdSchema, uuidParamSchema, registerTruckSchema } from '../validation/requestSchemas.js';
+import { uuidParamSchema, registerTruckSchema } from '../validation/requestSchemas.js';
 import { getRouteEstimate } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
 import { predictPrice } from '../services/ml.js';
 import logger from '../middleware/logger.js';
+
+function sanitizeNumberPlate(plate) {
+  if (!plate || typeof plate !== 'string') return '';
+  return plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function sanitizeTruckName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name.trim().slice(0, 100)
+    .replace(/[<>]/g, '')
+    .replace(/script/gi, '')
+    .replace(/javascript/gi, '')
+    .replace(/on\w+=/gi, '');
+}
+
+function validateCapacity(capacity) {
+  const num = Number(capacity);
+  return Number.isFinite(num) && num > 0 && num <= 100 ? num : null;
+}
 
 const router = express.Router();
 
@@ -20,12 +40,12 @@ router.get('/types', authenticate, userLimiter, (req, res) => {
 function parseCapacityFilter(value, field) {
   if (value === undefined) return { value: undefined };
   if (typeof value !== 'string' || value.trim() === '') {
-    return { error: `${field} must be a positive number` };
+    return { error: `${field} must be a non-negative number` };
   }
 
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return { error: `${field} must be a positive number` };
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return { error: `${field} must be a non-negative number` };
   }
 
   return { value: parsed };
@@ -47,7 +67,7 @@ function parseCapacityFilter(value, field) {
  * @returns {object} 409 - Truck with number plate already registered
  * @returns {object} 500 - Internal server error
  */
-router.post('/', authenticate, requireRole(['driver']), userLimiter, validateBody(registerTruckSchema), async (req, res) => {
+router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, validateBody(registerTruckSchema), async (req, res) => {
   const { name, number_plate, max_capacity_tons } = req.body;
 
   try {
@@ -99,7 +119,7 @@ router.post('/', authenticate, requireRole(['driver']), userLimiter, validateBod
  * @returns {object} 403 - Forbidden for non-drivers
  * @returns {object} 500 - Internal server error
  */
-router.get('/', authenticate, requireRole(['driver']), userLimiter, async (req, res) => {
+router.get('/', authenticate, requirePolicy('truck:list-own'), userLimiter, async (req, res) => {
   const { name, min_capacity, max_capacity } = req.query;
 
   try {
@@ -133,20 +153,12 @@ router.get('/', authenticate, requireRole(['driver']), userLimiter, async (req, 
       }
     }
 
-    if (min_capacity !== undefined) {
-      const minCapNum = Number(min_capacity);
-      if (!Number.isFinite(minCapNum) || minCapNum < 0) {
-        return res.status(400).json({ error: 'min_capacity must be a non-negative number' });
-      }
-      query = query.gte('max_capacity_tons', minCapNum);
+    if (minCapacity.value !== undefined) {
+      query = query.gte('max_capacity_tons', minCapacity.value);
     }
 
-    if (max_capacity !== undefined) {
-      const maxCapNum = Number(max_capacity);
-      if (!Number.isFinite(maxCapNum) || maxCapNum < 0) {
-        return res.status(400).json({ error: 'max_capacity must be a non-negative number' });
-      }
-      query = query.lte('max_capacity_tons', maxCapNum);
+    if (maxCapacity.value !== undefined) {
+      query = query.lte('max_capacity_tons', maxCapacity.value);
     }
 
     const { data: trucks, error } = await query.order('created_at', { ascending: false });
@@ -183,7 +195,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     is_fragile, is_stackable
   } = req.query;
 
-  if (!pickup_lat || !pickup_lng || !drop_lat || !drop_lng || !weight_tonnes) {
+  if (pickup_lat == null || pickup_lng == null || drop_lat == null || drop_lng == null || weight_tonnes == null) {
     return res.status(400).json({ error: 'Missing required query parameters: pickup_lat, pickup_lng, drop_lat, drop_lng, weight_tonnes' });
   }
 
@@ -199,6 +211,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
 
   if (!isLatitude(numPickupLat) || !isLatitude(numDropLat) || !isLongitude(numPickupLng) || !isLongitude(numDropLng)) {
     return res.status(400).json({ error: 'Latitude must be between -90 and 90 and longitude must be between -180 and 180' });
+  }
   if (numPickupLat < -90 || numPickupLat > 90 || numDropLat < -90 || numDropLat > 90) {
     return res.status(400).json({ error: 'Latitude must be between -90 and 90' });
   }
@@ -258,11 +271,38 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
       logger.warn({ err: mlErr.message }, 'Price prediction unavailable during search, falling back to base pricing');
     }
 
+    let nearbyDriverIds = [];
+    if (mongoDb) {
+      try {
+        const maxDistanceMeters = 50000; // 50km radius
+        const nearbyTelemetry = await mongoDb.collection('telemetry').find({
+          location: {
+            $near: {
+              $geometry: {
+                type: "Point",
+                coordinates: [numPickupLng, numPickupLat]
+              },
+              $maxDistance: maxDistanceMeters
+            }
+          }
+        }).toArray();
+
+        nearbyDriverIds = [...new Set(nearbyTelemetry.map(t => t.driver_id))];
+      } catch (mongoErr) {
+        logger.error('MongoDB telemetry search error:', mongoErr.message);
+      }
+    }
+
+    if (nearbyDriverIds.length === 0) {
+      return res.json([]);
+    }
+
     const { data: drivers, error: driversErr } = await supabase
       .from('driver_details')
       .select('user_id, rating, total_trips, completion_rate, truck_id')
       .eq('is_online', true)
-      .not('truck_id', 'is', null);
+      .not('truck_id', 'is', null)
+      .in('user_id', nearbyDriverIds);
 
     if (driversErr) {
       logger.error('Driver search error:', driversErr.message);
@@ -342,3 +382,5 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
 });
 
 export default router;
+
+// Resolves #2053: Prevent race conditions in truck allocation

@@ -7,8 +7,52 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 
+const TELEMETRY_SCHEMA = {
+  lat: { type: 'number', required: true, min: -90, max: 90 },
+  lng: { type: 'number', required: true, min: -180, max: 180 },
+  driverId: { type: 'string', required: true, minLen: 1 },
+  timestamp: { type: 'number', required: true },
+  speed: { type: 'number', required: false, min: 0, max: 200 },
+  heading: { type: 'number', required: false, min: 0, max: 360 },
+};
+
+function validateTelemetryPayload(data) {
+  const errors = [];
+  for (const [field, rules] of Object.entries(TELEMETRY_SCHEMA)) {
+    const value = data[field];
+    if (rules.required && (value === undefined || value === null)) {
+      errors.push(`${field} is required`);
+      continue;
+    }
+    if (value === undefined || value === null) continue;
+    if (rules.type === 'number' && (typeof value !== 'number' || isNaN(value))) {
+      errors.push(`${field} must be a valid number`);
+    }
+    if (rules.type === 'string' && typeof value !== 'string') {
+      errors.push(`${field} must be a string`);
+    }
+    if (rules.min !== undefined && value < rules.min) errors.push(`${field} must be >= ${rules.min}`);
+    if (rules.max !== undefined && value > rules.max) errors.push(`${field} must be <= ${rules.max}`);
+    if (rules.minLen !== undefined && String(value).length < rules.minLen) errors.push(`${field} is too short`);
+  }
+  return errors.length > 0 ? errors : null;
+}
+
+function sanitizeTelemetryData(data) {
+  const sanitized = {};
+  for (const [field, rules] of Object.entries(TELEMETRY_SCHEMA)) {
+    const value = data[field];
+    if (value !== undefined && value !== null) {
+      sanitized[field] = rules.type === 'number' ? Number(value) : String(value);
+    }
+  }
+  return sanitized;
+}
+
 let mongoDbOverride = null;
 const getMongoDb = () => mongoDbOverride || mongoDb;
+
+let _orderRepository = null;
 
 let telemetryDropCounter = 0;
 const RECOVERY_FILE_PATH = process.env.RECOVERY_FILE_PATH || path.join(os.tmpdir(), 'truxify-telemetry-recovery.jsonl');
@@ -44,11 +88,63 @@ const consecutiveDropCount = new Map();
 // =====================================================================
 // EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
 // =====================================================================
+class TelemetryRingBuffer {
+  constructor(capacity) {
+    this.capacity = capacity;
+    this.buffer = new Array(capacity);
+    this.head = 0;
+    this.tail = 0;
+    this.size = 0;
+  }
+
+  push(item) {
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.capacity;
+    if (this.size < this.capacity) {
+      this.size++;
+    } else {
+      this.head = (this.head + 1) % this.capacity;
+    }
+  }
+
+  toArray() {
+    if (this.size === 0) return [];
+    const result = new Array(this.size);
+    for (let i = 0; i < this.size; i++) {
+      result[i] = this.buffer[(this.head + i) % this.capacity];
+    }
+    return result;
+  }
+
+  prepend(items) {
+    if (!items || items.length === 0) return 0;
+    const available = this.capacity - this.size;
+    const toInsert = items.length > available ? items.slice(items.length - available) : items;
+    const dropped = items.length > available ? items.length - available : 0;
+    for (let i = toInsert.length - 1; i >= 0; i--) {
+      this.head = (this.head - 1 + this.capacity) % this.capacity;
+      this.buffer[this.head] = toInsert[i];
+      this.size++;
+    }
+    return dropped;
+  }
+
+  clear() {
+    this.head = 0;
+    this.tail = 0;
+    this.size = 0;
+  }
+
+  get length() {
+    return this.size;
+  }
+}
+
 const MAX_BUFFER_SIZE = 5000;
 const BUFFER_WARN_THRESHOLD = 0.5;
 const BUFFER_CRIT_THRESHOLD = 0.8;
 const BUFFER_MONITOR_INTERVAL_MS = 30000;
-let telemetryWriteBuffer = [];
+const telemetryWriteBuffer = new TelemetryRingBuffer(MAX_BUFFER_SIZE);
 let telemetryFlushBuffer = [];
 let currentFlushPromise = null;
 let flushMutex = false;
@@ -59,6 +155,7 @@ let telemetryFlushTimeout = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
 let telemetryMonitorInterval = null;
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000; // 3 minutes
 
 // Observability counters
 let telemetryTotalFlushed = 0;
@@ -70,6 +167,58 @@ const WS_UPGRADE_RATE_LIMIT = 5;
 const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
 const MAX_MSG_PER_SECOND = 10;
 const messageRateTracker = new WeakMap();
+
+// =====================================================================
+// DRIVER → ORDER CACHE (performance: avoid repeated Supabase lookups)
+// =====================================================================
+const DRIVER_ORDER_CACHE_TTL_SECONDS = 60;
+const DRIVER_ORDER_CACHE_KEY_PREFIX = 'driver:active-order:';
+
+/**
+ * Retrieve the cached active order mapping for a driver.
+ * Returns { orderId, orderDisplayId } or null on miss / error.
+ */
+async function getCachedDriverOrder(driverId) {
+  if (!redisClient) return null;
+  try {
+    const cached = await redisClient.get(`${DRIVER_ORDER_CACHE_KEY_PREFIX}${driverId}`);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch (err) {
+    logger.error('Redis driver order cache get error:', err.message);
+  }
+  return null;
+}
+
+/**
+ * Store the driver → active order mapping in Redis.
+ */
+async function setCachedDriverOrder(driverId, orderId, orderDisplayId) {
+  if (!redisClient || !orderId) return;
+  try {
+    await redisClient.set(
+      `${DRIVER_ORDER_CACHE_KEY_PREFIX}${driverId}`,
+      JSON.stringify({ orderId, orderDisplayId }),
+      'EX',
+      DRIVER_ORDER_CACHE_TTL_SECONDS,
+    );
+  } catch (err) {
+    logger.error('Redis driver order cache set error:', err.message);
+  }
+}
+
+/**
+ * Invalidate cached active order for a driver.
+ */
+async function invalidateDriverOrderCache(driverId) {
+  if (!redisClient) return;
+  try {
+    await redisClient.del(`${DRIVER_ORDER_CACHE_KEY_PREFIX}${driverId}`);
+  } catch (err) {
+    logger.error('Redis driver order cache invalidate error:', err.message);
+  }
+}
 
 function getClientIp(request) {
   const forwardedFor = request.headers?.['x-forwarded-for'];
@@ -120,7 +269,13 @@ export function rejectWebSocketUpgrade(socket) {
 /**
  * Initialize WebSockets Server and bind event handlers
  */
-export function initWebSocketServer(server) {
+export function initWebSocketServer(server, orderRepository) {
+  if (wsServer) {
+    logger.warn('[initWebSocketServer] Already initialized — skipping duplicate call to prevent connection leaks.');
+    return;
+  }
+
+  _orderRepository = orderRepository;
   const wss = new WebSocketServer({ noServer: true });
   wsServer = wss;
 
@@ -284,7 +439,7 @@ export function initWebSocketServer(server) {
       ws.isAlive = false;
       ws.ping();
     });
-  }, 30000);
+  }, HEARTBEAT_INTERVAL_MS);
 
   wss.on('close', () => {
     if (wsHeartbeatInterval) {
@@ -458,24 +613,42 @@ export async function handleLocationPing(ws, data, req) {
     }
   }
 
-  // Resolve order details from Supabase
+  // Resolve order details from Supabase and verify driver ownership
   let orderUUID = data.orderId || data.order_id || null;
   let orderDisplayId = data.order_display_id || null;
 
-  if (supabase && (orderUUID || orderDisplayId)) {
+  if (_orderRepository && (orderUUID || orderDisplayId)) {
     try {
-      let query = supabase.from('orders').select('id, order_display_id');
-      if (orderUUID && orderUUID.includes('-')) {
-        query = query.eq('id', orderUUID);
-      } else if (orderDisplayId) {
-        query = query.eq('order_display_id', orderDisplayId);
+      // ── Cache-first order resolution ────────────────────────────────
+      // Check Redis for a cached driver→order mapping before hitting the
+      // database.  This avoids repeated Supabase queries for the same
+      // driver during an active trip.
+      const cached = await getCachedDriverOrder(driver_id);
+      if (cached) {
+        orderUUID = cached.orderId;
+        orderDisplayId = cached.orderDisplayId;
       } else {
-        query = query.eq('order_display_id', orderUUID);
-      }
-      const { data: order } = await query.maybeSingle();
-      if (order) {
-        orderUUID = order.id;
-        orderDisplayId = order.order_display_id;
+        const idToLookup = orderUUID || orderDisplayId;
+        const { data: order } = await _orderRepository.findOrderByAnyId(idToLookup, 'id, order_display_id, driver_id');
+        if (order) {
+          // Verify the authenticated driver is assigned to this order
+          if (order.driver_id !== driver_id) {
+            logger.warn({
+              event: 'UNAUTHORIZED_ORDER_TRACKING',
+              driverId: driver_id,
+              orderId: order.id,
+              orderDisplayId: order.order_display_id,
+              assignedDriverId: order.driver_id,
+            }, 'Driver attempted to submit location for order they are not assigned to');
+            return ws.send(JSON.stringify({
+              error: 'Not authorized to track this order',
+              orderId: orderDisplayId || orderUUID,
+            }));
+          }
+          orderUUID = order.id;
+          orderDisplayId = order.order_display_id;
+          await setCachedDriverOrder(driver_id, orderUUID, orderDisplayId);
+        }
       }
     } catch (err) {
       logger.error('Failed to resolve order details in tracker:', err.message);
@@ -484,11 +657,8 @@ export async function handleLocationPing(ws, data, req) {
 
   // Buffer write with capacity limit (always push to active buffer)
   if (telemetryWriteBuffer.length >= MAX_BUFFER_SIZE) {
-    const dropCount = Math.floor(MAX_BUFFER_SIZE * 0.1);
-    telemetryWriteBuffer.splice(0, dropCount);
-    telemetryTotalDropped += dropCount;
-    telemetryOverflowDropped += dropCount;
-    logger.warn(`[TRUXIFY BUFFER WARN] Telemetry buffer full: dropped ${dropCount} oldest records. Total dropped: ${telemetryTotalDropped}. Size: ${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE}`);
+    telemetryTotalDropped++;
+    telemetryOverflowDropped++;
   }
   telemetryWriteBuffer.push({
     driver_id,
@@ -614,10 +784,10 @@ async function flushTelemetryBuffer() {
   // snapshot (instead of aliasing the active buffer as the flush buffer)
   // avoids re-queueing the same array twice on transient failures.
   const recordsToFlush = telemetryFlushBuffer.length > 0
-    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer]
-    : telemetryWriteBuffer;
+    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer.toArray()]
+    : telemetryWriteBuffer.toArray();
   telemetryFlushBuffer = [];
-  telemetryWriteBuffer = [];
+  telemetryWriteBuffer.clear();
 
   flushMutex = false;
 
@@ -651,10 +821,8 @@ async function flushTelemetryBuffer() {
           ? recordsToFlush.filter((_, i) => !err.writeErrors.some(e => e.index === i))
           : [];
         if (succeeded.length > 0) {
-          telemetryWriteBuffer = [...succeeded, ...telemetryWriteBuffer];
-          if (telemetryWriteBuffer.length > MAX_BUFFER_SIZE) {
-            const overflowDrop = telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
-            telemetryWriteBuffer.splice(0, overflowDrop);
+          const overflowDrop = telemetryWriteBuffer.prepend(succeeded);
+          if (overflowDrop > 0) {
             telemetryTotalDropped += overflowDrop;
             telemetryOverflowDropped += overflowDrop;
             logger.warn(`[TRUXIFY BUFFER DROP] Dropped ${overflowDrop} oldest records due to capacity after partial insert.`);
@@ -662,14 +830,11 @@ async function flushTelemetryBuffer() {
         }
       } else {
         flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
-        // Prepend failed records to the FRONT for oldest-first retry priority
-        telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
-        if (telemetryWriteBuffer.length > MAX_BUFFER_SIZE) {
-          const overflowDrop = telemetryWriteBuffer.length - MAX_BUFFER_SIZE;
-          telemetryWriteBuffer.splice(0, overflowDrop);
+        const overflowDrop = telemetryWriteBuffer.prepend(recordsToFlush);
+        if (overflowDrop > 0) {
           telemetryTotalDropped += overflowDrop;
           telemetryOverflowDropped += overflowDrop;
-          logger.warn(`[TRUXIFY BUFFER DROP] Capacity limit: dropped ${overflowDrop} oldest records from retry merge.`);
+          logger.warn(`[TRUXIFY BUFFER DROP] Dropped ${overflowDrop} oldest records due to capacity after flush failure.`);
         }
       }
     } finally {
@@ -720,7 +885,7 @@ function loadRecoveryFile() {
       if (content) {
         const records = content.split('\n').filter(Boolean).map(line => JSON.parse(line));
         if (records.length > 0) {
-          telemetryWriteBuffer = [...records, ...telemetryWriteBuffer].slice(-MAX_BUFFER_SIZE);
+          telemetryWriteBuffer.prepend(records);
           logger.info(`[TRUXIFY RECOVERY] Loaded ${records.length} telemetry records from recovery file. Buffer size: ${telemetryWriteBuffer.length}`);
         }
       }
@@ -772,7 +937,7 @@ export async function closeWebSocketServer() {
       const dataLoss = telemetryWriteBuffer.length;
       if (dataLoss > 0) {
         try {
-          const lines = telemetryWriteBuffer.map(r => JSON.stringify(scrubPII(r))).join('\n');
+          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(scrubPII(r))).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
           logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
@@ -872,15 +1037,11 @@ async function canSubscribe(ws, { order_display_id, driver_id }) {
     return driver_id === userId || driver_id === ws.driverId;
   }
 
-  if (!order_display_id || !supabase) {
+  if (!order_display_id || !_orderRepository) {
     return false;
   }
 
-  const { data: order, error } = await supabase
-    .from('orders')
-    .select('customer_id, driver_id')
-    .eq('order_display_id', order_display_id)
-    .maybeSingle();
+  const { data: order, error } = await _orderRepository.findOrderByDisplayId(order_display_id, 'customer_id, driver_id');
 
   if (error || !order) {
     return false;
@@ -964,6 +1125,9 @@ async function removeClientFromAllSubscriptions(ws) {
         } catch (err) {
           logger.error('Redis subscription expire error on disconnect:', err.message);
         }
+        // Invalidate the driver→order cache when the last socket for this
+        // driver disconnects so a stale mapping does not persist.
+        await invalidateDriverOrderCache(subscriberId);
       }
     }
   }
@@ -1011,6 +1175,9 @@ export const __testing = {
   resetTrackingSubscriptions() {
     trackingSubscriptions.clear();
   },
+  setOrderRepository(repo) {
+    _orderRepository = repo;
+  },
   async restoreSubscriptions(ws) {
     await restoreSubscriptions(ws);
   },
@@ -1026,13 +1193,21 @@ export const __testing = {
     return telemetryFlushBuffer;
   },
   setTelemetryWriteBuffer(records) {
-    telemetryWriteBuffer = records;
+    telemetryWriteBuffer.clear();
+    if (records) telemetryWriteBuffer.prepend(records);
   },
   setTelemetryFlushBuffer(records) {
     telemetryFlushBuffer = records;
   },
+  pushToTelemetryWriteBuffer(records) {
+    if (Array.isArray(records)) {
+      for (const r of records) telemetryWriteBuffer.push(r);
+    } else {
+      telemetryWriteBuffer.push(records);
+    }
+  },
   clearTelemetryWriteBuffer() {
-    telemetryWriteBuffer = [];
+    telemetryWriteBuffer.clear();
   },
   clearTelemetryFlushBuffer() {
     telemetryFlushBuffer = [];
@@ -1063,6 +1238,14 @@ export const __testing = {
   get MAX_CONSECUTIVE_DROPS() {
     return MAX_CONSECUTIVE_DROPS;
   },
+  // ── Driver order cache helpers (for testing) ──────────────────────
+  getCachedDriverOrder,
+  setCachedDriverOrder,
+  invalidateDriverOrderCache,
+  DRIVER_ORDER_CACHE_KEY_PREFIX,
+  DRIVER_ORDER_CACHE_TTL_SECONDS,
 };
 
 // Fix: implemented exponential backoff (retry count * 1000ms) for Supabase channel reconnects.
+
+// Resolves #2045: Cache channels per orderUUID

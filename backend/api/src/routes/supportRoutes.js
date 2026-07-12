@@ -1,15 +1,20 @@
 import express from 'express';
 import { supabase } from '../config/db.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
-import { createTicketSchema, updateTicketSchema, createTicketCommentSchema, paramIdSchema } from '../validation/requestSchemas.js';
+import logger from '../middleware/logger.js';
+import { createTicketSchema, updateTicketSchema, createTicketCommentSchema, paramIdSchema, uuidParamSchema } from '../validation/requestSchemas.js';
+import { startTimer, endTimer } from '../lib/routeTiming.js';
 
 const router = express.Router();
+const routeTimer = startTimer('supportRoutes');
 
 const FAQ_COLUMNS = 'id, question, answer, app_type, sort_order';
 const TICKET_COLUMNS = 'id, subject, description, category, status, created_at, updated_at';
 const TICKET_DETAIL_COLUMNS = 'id, user_id, subject, description, category, status, created_at, updated_at';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Canonical map of all accepted category aliases -> database values.
 // Shared by ticket creation, ticket update, and the categories endpoint.
@@ -39,6 +44,28 @@ function parsePositiveInteger(value, fallback, field) {
   }
 
   return { value: parsed };
+}
+
+function parseIntegerQuery(value, fallback, field, options = {}) {
+  if (value === undefined) return { value: fallback };
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) {
+    return { error: `${field} must be an integer` };
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (options.min !== undefined && parsed < options.min) {
+    return { error: `${field} must be at least ${options.min}` };
+  }
+
+  return { value: parsed };
+}
+
+function parseUuidQuery(value, field) {
+  if (value === undefined) return { value: undefined };
+  if (typeof value !== 'string' || !UUID_REGEX.test(value)) {
+    return { error: `${field} must be a valid UUID` };
+  }
+  return { value };
 }
 
 // ============================================================================
@@ -127,8 +154,14 @@ router.post('/tickets', authenticate, userLimiter, validateBody(createTicketSche
   const category = normalizeRequiredText(req.body.category);
   const description = normalizeRequiredText(req.body.description) || subject;
 
-  const normalizedCategory = category.toLowerCase();
-  const dbCategory = CATEGORY_MAP[normalizedCategory] || 'general';
+  const normalizedCategory = category.toLowerCase().trim();
+  const dbCategory = CATEGORY_MAP[normalizedCategory];
+
+  if (!dbCategory) {
+    return res.status(400).json({
+      error: `Invalid support ticket category. Must be one of: ${Object.keys(CATEGORY_MAP).join(', ')}`,
+    });
+  }
 
   try {
     const { data: ticket, error } = await supabase
@@ -190,6 +223,10 @@ router.get('/tickets', authenticate, userLimiter, async (req, res) => {
       .eq('user_id', req.user.id);
 
     if (status) {
+      const ALLOWED_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
+      if (!ALLOWED_STATUSES.includes(status)) {
+        return res.status(400).json({ error: 'Unsupported support ticket status.' });
+      }
       query = query.eq('status', status);
     }
 
@@ -225,7 +262,7 @@ router.get('/tickets', authenticate, userLimiter, async (req, res) => {
 // ============================================================================
 // 5. GET SINGLE SUPPORT TICKET (AUTHENTICATED USER - OWNER)
 // ============================================================================
-router.get('/tickets/:id', authenticate, userLimiter, async (req, res) => {
+router.get('/tickets/:id', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
   const ticketId = req.params.id;
 
   try {
@@ -344,7 +381,7 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
 // ============================================================================
 // 7. LIST ALL TICKETS (ADMIN ONLY)
 // ============================================================================
-router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), async (req, res) => {
+router.get('/admin/tickets', authenticate, userLimiter, requirePolicy('ticket:admin-view-all'), async (req, res) => {
   const { status, category, user_id, page = '1', limit = '20' } = req.query;
   const parsedPage = parsePositiveInteger(page, 1, 'page');
   if (parsedPage.error) {
@@ -365,12 +402,21 @@ router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), 
     return res.status(400).json({ error: 'Unsupported support ticket category.' });
   }
 
+  const userIdResult = parseUuidQuery(user_id, 'user_id');
+  if (userIdResult.error) {
+    return res.status(400).json({ error: userIdResult.error });
+  }
+
   try {
     let query = supabase
       .from('support_tickets')
       .select(TICKET_DETAIL_COLUMNS, { count: 'exact' });
 
     if (status) {
+      const ADMIN_ALLOWED_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
+      if (!ADMIN_ALLOWED_STATUSES.includes(status)) {
+        return res.status(400).json({ error: 'Unsupported support ticket status.' });
+      }
       query = query.eq('status', status);
     }
 
@@ -378,8 +424,8 @@ router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), 
       query = query.eq('category', dbCategory);
     }
 
-    if (user_id) {
-      query = query.eq('user_id', user_id);
+    if (userIdResult.value) {
+      query = query.eq('user_id', userIdResult.value);
     }
 
     const { data: tickets, error, count } = await query
@@ -420,7 +466,7 @@ router.get('/admin/tickets', authenticate, userLimiter, requireRole(['admin']), 
  * @returns {object} 409 - Cannot comment on a closed ticket
  * @returns {object} 500 - Internal server error
  */
-router.post('/tickets/:id/comments', authenticate, userLimiter, validateBody(createTicketCommentSchema), async (req, res) => {
+router.post('/tickets/:id/comments', authenticate, userLimiter, validateParams(uuidParamSchema), validateBody(createTicketCommentSchema), async (req, res) => {
   const ticketId = req.params.id;
   const { message } = req.body;
 
@@ -511,17 +557,13 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, validateParams(pa
       return res.status(403).json({ error: 'Access Denied: You do not own this ticket.' });
     }
 
-    const parsedLimit = parseIntegerQuery(req.query.limit, 100, 'limit', { min: 1 });
+    const parsedLimit = parsePositiveInteger(req.query.limit, 100, 'limit');
     if (parsedLimit.error) {
       return res.status(400).json({ error: parsedLimit.error });
     }
-    const parsedOffset = parseIntegerQuery(req.query.offset, 0, 'offset', { min: 0 });
-    if (parsedOffset.error) {
-      return res.status(400).json({ error: parsedOffset.error });
-    }
 
     const limit = Math.min(100, parsedLimit.value);
-    const offset = parsedOffset.value;
+    const offset = typeof req.query.offset === 'string' ? Number.parseInt(req.query.offset, 10) : 0;
 
     const { data: comments, error: commentsError } = await supabase
       .from('support_ticket_comments')
@@ -543,4 +585,7 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, validateParams(pa
   }
 });
 
+endTimer(routeTimer);
 export default router;
+
+// Resolves #2055: Load-based ticket assignment
