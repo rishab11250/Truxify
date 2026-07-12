@@ -3,25 +3,50 @@ import { supabase, redisClient } from '../config/db.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
-const CACHE_TTL = 3600; // 1 hour
+const CACHE_TTL = 3600; // 1 hour for L2 Redis
+const L1_TTL = 300 * 1000; // 5 minutes for L1 Memory Cache
+const l1Cache = new Map();
 
 async function getCachedOrFetch(key, fetchFn) {
+  const now = Date.now();
+
+  // 1. Check L1 Memory Cache
+  const l1Entry = l1Cache.get(key);
+  if (l1Entry) {
+    if (now < l1Entry.expiresAt) {
+      return l1Entry.data;
+    }
+    l1Cache.delete(key);
+  }
+
+  // 2. Check L2 Redis Cache
   if (redisClient) {
     try {
       const cached = await redisClient.get(key);
-      if (cached) return JSON.parse(cached);
+      if (cached) {
+        const data = JSON.parse(cached);
+        l1Cache.set(key, { data, expiresAt: now + L1_TTL });
+        return data;
+      }
     } catch (err) {
       logger.error({ err, key }, 'Redis cache get error');
     }
   }
 
+  // 3. Cache Miss - Fetch from Database
   const data = await fetchFn();
 
-  if (redisClient && data) {
-    try {
-      await redisClient.set(key, JSON.stringify(data), 'EX', CACHE_TTL);
-    } catch (err) {
-      logger.error({ err, key }, 'Redis cache set error');
+  if (data) {
+    // Populate L1 Cache
+    l1Cache.set(key, { data, expiresAt: now + L1_TTL });
+
+    // Populate L2 Cache
+    if (redisClient) {
+      try {
+        await redisClient.set(key, JSON.stringify(data), 'EX', CACHE_TTL);
+      } catch (err) {
+        logger.error({ err, key }, 'Redis cache set error');
+      }
     }
   }
 
