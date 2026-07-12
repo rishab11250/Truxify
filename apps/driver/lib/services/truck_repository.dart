@@ -82,8 +82,10 @@ class TruckRepository {
     final response = await _client
         .from('trucks')
         .update({'mileage_km': currentMileage, 'updated_at': DateTime.now().toIso8601String()})
-        .eq('id', truckId);
-    return response > 0;
+        .eq('id', truckId)
+        .select('id')
+        .maybeSingle();
+    return response != null;
   }
 
   Future<List<Map<String, dynamic>>> fetchTruckDocuments(String truckId) async {
