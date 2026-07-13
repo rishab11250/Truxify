@@ -376,7 +376,6 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
   try {
-    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: false });
     const { data: offers, error } = await orderRepository.findLoadOffers(
       { is_en_route: false },
       { pagination: { page, limit } }
@@ -397,7 +396,6 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
   try {
-    const { data: offers, error } = await orderRepository.findLoadOffers({ is_en_route: true });
     const { data: offers, error } = await orderRepository.findLoadOffers(
       { is_en_route: true },
       { pagination: { page, limit } }
