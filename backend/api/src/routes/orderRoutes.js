@@ -487,7 +487,7 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
 
   try {
     let order = null;
-    if (UUID_RE.test(orderId)) {
+    if (uuidRegex.test(orderId)) {
       const { data: orderById } = await orderRepository.findOrderForTimeline(orderId);
       order = orderById;
     }
