@@ -23,22 +23,15 @@ export class LockAcquisitionError extends Error {
  */
 export async function acquireLock(resourceKey, ttlMs = 10000) {
   if (!redisClient) {
-    logger.warn('[RedisLock] redisClient not available, cannot acquire lock for', resourceKey);
-    return null;
+    logger.error('[RedisLock] redisClient not available — cannot acquire lock for', resourceKey);
+    throw new Error('Distributed lock unavailable: Redis is not connected');
   }
 
   const lockValue = crypto.randomUUID();
+  const acquired = await redisClient.set(resourceKey, lockValue, 'PX', ttlMs, 'NX');
 
-  try {
-    const acquired = await redisClient.set(resourceKey, lockValue, 'PX', ttlMs, 'NX');
-
-    if (acquired) {
-      return lockValue;
-    }
-    return null;
-  } catch (err) {
-    logger.error({ err }, '[RedisLock] Error acquiring lock for key', resourceKey);
-    return null;
+  if (acquired) {
+    return lockValue;
   }
 }
 
