@@ -759,6 +759,7 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('de
 router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requirePolicy('delivery:resend-otp'), validateParams(paramIdSchema), async (req, res) => {
 
   try {
+    const orderId = req.params.id;
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, driver_id, customer_id, status');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertDriverAssignment(order, req.user.id);
