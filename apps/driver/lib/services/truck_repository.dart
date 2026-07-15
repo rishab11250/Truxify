@@ -6,6 +6,13 @@ class TruckRepository {
   TruckRepository({SupabaseClient? client})
       : _client = client ?? Supabase.instance.client;
 
+  static const Set<String> _allowedTicketStatuses = {
+    'open',
+    'in_progress',
+    'resolved',
+    'closed',
+  };
+
   final SupabaseClient _client;
 
   Future<Truck?> fetchTruckForDriver(String driverId) async {
@@ -54,5 +61,53 @@ class TruckRepository {
         .single();
 
     return TruckMaintenanceTicket.fromJson(inserted);
+  }
+
+  Future<TruckMaintenanceTicket?> updateTicketStatus({
+    required int ticketId,
+    required String driverId,
+    required String status,
+    String? resolutionNotes,
+  }) async {
+    final normalizedStatus = status.trim().toLowerCase();
+    if (!_allowedTicketStatuses.contains(normalizedStatus)) {
+      throw ArgumentError.value(status, 'status', 'unsupported ticket status');
+    }
+
+    final update = <String, dynamic>{'status': normalizedStatus};
+    if (resolutionNotes != null) update['resolution_notes'] = resolutionNotes;
+    if (normalizedStatus == 'resolved' || normalizedStatus == 'closed') {
+      update['resolved_at'] = DateTime.now().toIso8601String();
+    }
+    final response = await _client
+        .from('truck_maintenance_tickets')
+        .update(update)
+        .eq('id', ticketId)
+        .eq('driver_id', driverId)
+        .select()
+        .maybeSingle();
+    return response == null ? null : TruckMaintenanceTicket.fromJson(response);
+  }
+
+  Future<bool> updateTruckMileage({
+    required String truckId,
+    required double currentMileage,
+  }) async {
+    final response = await _client
+        .from('trucks')
+        .update({'mileage_km': currentMileage, 'updated_at': DateTime.now().toIso8601String()})
+        .eq('id', truckId)
+        .select('id')
+        .maybeSingle();
+    return response != null;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTruckDocuments(String truckId) async {
+    final response = await _client
+        .from('truck_documents')
+        .select()
+        .eq('truck_id', truckId)
+        .order('expires_at', ascending: true);
+    return List<Map<String, dynamic>>.from(response);
   }
 }
