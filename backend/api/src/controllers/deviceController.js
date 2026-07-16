@@ -137,9 +137,10 @@ export async function unregisterDeviceToken(req, res) {
       });
     }
 
-    if (!fcmToken) {
+    const tokenErr = validateFcmToken(fcmToken);
+    if (tokenErr) {
       return res.status(400).json({
-        error: 'fcmToken is required'
+        error: tokenErr
       });
     }
 
