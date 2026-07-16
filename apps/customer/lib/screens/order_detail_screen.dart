@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../constants/supabase_config.dart';
 import '../controllers/app_controller.dart';
 import '../models/app_models.dart';
 import '../services/order_service.dart';
+import '../services/tracking_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/timeline_row.dart';
@@ -23,6 +25,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   final TextEditingController _commentController = TextEditingController();
   late HistoryOrderData _currentOrder;
   final OrderService _orderService = OrderService();
+  final TrackingService _trackingService = TrackingService();
   RealtimeChannel? _ordersChannel;
   bool _ratingDialogShown = false;
 
@@ -321,6 +324,34 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
+  Future<void> _shareTracking() async {
+    try {
+      final result = await _trackingService.shareTrackingLink(
+        orderDisplayId: _currentOrder.orderId,
+      );
+
+      final trackingUrl = result['trackingUrl'] as String?;
+      if (trackingUrl == null || trackingUrl.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to generate tracking link')),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await Share.share(
+        'Track your shipment on Truxify:\n$trackingUrl',
+        subject: 'Shipment Tracking - ${_currentOrder.orderId}',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to share: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSuccess = _currentOrder.status == 'Delivered' || _currentOrder.status == 'Payment Released';
@@ -329,7 +360,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       appBar: AppBar(
         title: const Text('Order Details'),
         leading: IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back_rounded)),
-        actions: [IconButton(onPressed: () {}, icon: const Icon(Icons.download_rounded))],
+        actions: [IconButton(onPressed: _shareTracking, icon: const Icon(Icons.share_rounded))],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),

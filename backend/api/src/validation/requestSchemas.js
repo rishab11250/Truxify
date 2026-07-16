@@ -271,3 +271,11 @@ export const verifyOrderParamsSchema = z.object({
 export const documentCheckSchema = z.object({
   driverId: uuidSchema,
 }).strict();
+
+// ── Public Order Tracking schemas ─────────────────────────────────────────
+
+export const shareTrackingSchema = z.object({}).strict();
+
+export const publicTrackingTokenSchema = z.object({
+  token: z.string().min(1, 'Tracking token is required').max(512),
+});

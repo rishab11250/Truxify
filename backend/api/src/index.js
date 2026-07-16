@@ -37,6 +37,8 @@ import oracleRoutes from './routes/oracleRoutes.js'
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
 // ============================================================================
+import trackingRoutes from './routes/trackingRoutes.js'
+import publicTrackingRoutes from './routes/publicTrackingRoutes.js'
 import shardRoutes from './routes/shardRoutes.js'
 import shardManager from './services/sharding/ShardManager.js'
 
@@ -326,6 +328,7 @@ app.use('/api', requestCacheMiddleware)
 // REST API ROUTING
 // ============================================================================
 app.use('/api/orders', orderRoutes)
+app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
@@ -334,6 +337,7 @@ app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/trucks', truckRoutes)
 app.use('/api/v1', lookupRoutes)
+app.use('/api/public', publicTrackingRoutes)
 app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 

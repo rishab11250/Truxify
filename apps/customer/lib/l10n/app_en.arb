@@ -725,5 +725,40 @@
   "failedToUpdateProfile": "Failed to update profile",
   "@failedToUpdateProfile": {
     "description": "Error message when profile update fails"
+  },
+
+  "shareTracking": "Share Tracking",
+  "@shareTracking": {
+    "description": "Button text to share order tracking link"
+  },
+
+  "trackingLinkGenerated": "Tracking link generated",
+  "@trackingLinkGenerated": {
+    "description": "Success message when tracking link is generated"
+  },
+
+  "unableToShare": "Unable to share",
+  "@unableToShare": {
+    "description": "Error message when sharing fails"
+  },
+
+  "linkExpired": "This tracking link has expired or is no longer valid.",
+  "@linkExpired": {
+    "description": "Message shown when a tracking link has expired"
+  },
+
+  "trackingRevoked": "All tracking links have been revoked.",
+  "@trackingRevoked": {
+    "description": "Message shown when tracking links are revoked"
+  },
+
+  "copyLink": "Copy Link",
+  "@copyLink": {
+    "description": "Button text to copy tracking link to clipboard"
+  },
+
+  "shareMessage": "Track your shipment on Truxify",
+  "@shareMessage": {
+    "description": "Default message included when sharing tracking link"
   }
 }
