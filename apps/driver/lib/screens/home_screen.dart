@@ -10,9 +10,9 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
-import 'package:truxify_driver/widgets/slide_to_confirm_button.dart';
 
 import '../core/app_routes.dart';
+import '../l10n/app_localizations.dart';
 import '../models/app_models.dart';
 import '../models/earnings_daily_model.dart';
 import '../services/driver_earnings_service.dart';
@@ -22,11 +22,14 @@ import '../services/route_service.dart';
 import '../services/trip_service.dart';
 import '../services/location_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/common_widgets.dart';
-import '../widgets/earnings_shimmer.dart';
 import '../widgets/map_markers.dart';
+import '../widgets/home/offline_banner.dart';
+import '../widgets/home/active_navigation_header.dart';
+import '../widgets/home/search_destination_card.dart';
+import '../widgets/home/new_load_notification_banner.dart';
+import '../widgets/home/driver_status_sheet.dart';
+import '../widgets/home/active_trip_sheet.dart';
 import 'destination_picker_screen.dart';
-import '../widgets/pulsing_location_dot.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -128,8 +131,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTripPayout = '';
   bool _isLoadingLocation = true;
   String? _locationError;
-  final List<TripRecord> tripHistory = [];
-
   late final MarketplaceRepository _marketplaceRepo;
   StreamSubscription<LoadOffer>? _loadSubscription;
   Timer? _autoHideTimer;
@@ -414,21 +415,21 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Location Permission Required'),
-        content: const Text(
-          'Location access is permanently denied. Please enable it in your device Settings to use this feature.',
+        title: Text(AppLocalizations.of(context)!.locationPermissionRequired),
+        content: Text(
+          AppLocalizations.of(context)!.locationPermDenied,
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context)!.cancel),
           ),
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
               Geolocator.openAppSettings();
             },
-            child: const Text('Open Settings'),
+            child: Text(AppLocalizations.of(context)!.openSettings),
           ),
         ],
       ),
@@ -625,7 +626,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() => _isOnline = !newStatus);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update status: $e')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.error)),
         );
       }
     }
@@ -635,7 +636,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_currentLocation == null) return;
     if (!_isOnline) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please go online to set destinations')),
+        SnackBar(content: Text(AppLocalizations.of(context)!.pleaseGoOnline)),
       );
       return;
     }
@@ -655,8 +656,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openDestinationPicker() async {
     if (!_isOnline) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Please go online to search destinations')),
+        SnackBar(
+            content: Text(AppLocalizations.of(context)!.pleaseGoOnline)),
       );
       return;
     }
@@ -664,7 +665,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final result = await Navigator.of(context, rootNavigator: true).pushNamed(
       AppRoutes.destinationPicker,
       arguments: DestinationPickerArgs(
-        title: 'Where are you going?',
+        title: AppLocalizations.of(context)!.whereAreYouHeading,
         initialQuery: query.isNotEmpty ? query : _destination?.address,
         initialPoint: _destination?.point,
       ),
@@ -709,7 +710,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to complete trip: $e')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.failedToCompleteTrip)),
         );
       }
       return;
@@ -723,7 +724,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Text('Trip completed! Net earnings added to wallet.'),
+        content: Text(AppLocalizations.of(context)!.tripCompletedNetEarnings('')),
         backgroundColor: TruxifyColors.success,
       ),
     );
@@ -732,14 +733,14 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
   /// Short readable label for the current location.
-  String get _currentLocationLabel {
-    if (_isLoadingLocation) return 'Locating...';
-    if (_locationError != null) return 'Location Unavailable';
+  String _currentLocationLabel(BuildContext context) {
+    if (_isLoadingLocation) return AppLocalizations.of(context)!.locating;
+    if (_locationError != null) return AppLocalizations.of(context)!.locationUnavailable;
     if (_currentLocationText != null && _currentLocationText!.isNotEmpty) {
       final parts = _currentLocationText!.split(',');
       return parts.first.trim();
     }
-    return 'Current Location';
+    return AppLocalizations.of(context)!.currentLocation;
   }
   @override
   Widget build(BuildContext context) {
@@ -751,10 +752,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             // Map
             Positioned.fill(
-              child: _buildMapBody(
-                context,
-                showDestinationChip: _destination != null,
-              ),
+              child: _buildMapBody(context),
             ),
 
             // Top Bar
@@ -781,15 +779,27 @@ class _HomeScreenState extends State<HomeScreen> {
                             const Icon(Icons.cloud_off_rounded, color: Colors.white, size: 16),
                             const SizedBox(width: 8),
                             Text(
-                              'You are offline. Using cached trip details.',
+                              AppLocalizations.of(context)!.offlineUsingCachedData,
                               style: GoogleFonts.dmSans(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                             ),
                           ],
                         ),
                       ),
+                    if (_isOffline) const OfflineBanner(),
                     _isTripStarted
-                        ? _buildActiveNavigationHeader(context)
-                        : _buildSearchCard(context),
+                        ? ActiveNavigationHeader(
+                            destinationAddress:
+                                _destination?.address ?? 'Destination',
+                          )
+                        : SearchDestinationCard(
+                            currentLocationText: _currentLocationText,
+                            destination: _destination,
+                            isLoadingLocation: _isLoadingLocation,
+                            isRefreshingLocation: _isRefreshingLocation,
+                            locationError: _locationError,
+                            onRefreshLocation: _fetchCurrentLocation,
+                            onOpenDestinationPicker: _openDestinationPicker,
+                          ),
                   ],
                 ),
               ),
@@ -801,13 +811,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 left: 12,
                 right: 12,
                 top: 96,
-                child: GestureDetector(
-                  onTap: () {
+                child: NewLoadNotificationBanner(
+                  load: _latestNewLoad!,
+                  onView: () {},
+                  onDismiss: () {
                     setState(() => _dismissedNewLoad = true);
-                    Navigator.of(context).pushNamed(
-                      AppRoutes.loadDetail,
-                      arguments: _latestNewLoad,
-                    );
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(
@@ -834,7 +842,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                'New Load Available!',
+                                AppLocalizations.of(context)!.newLoadAvailable,
                                 style: GoogleFonts.dmSans(
                                   fontSize: 13,
                                   fontWeight: FontWeight.bold,
@@ -883,7 +891,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              'View',
+                              AppLocalizations.of(context)!.view,
                               style: GoogleFonts.dmSans(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
@@ -910,7 +918,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // Recenter FAB — hidden until GPS is ready
+            // Recenter FAB
             if (_currentLocation != null)
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 300),
@@ -948,8 +956,51 @@ class _HomeScreenState extends State<HomeScreen> {
                       });
                     },
                     child: _destination == null
-                        ? _buildBottomSheet(context)
-                        : _buildActiveTripSheet(context),
+                        ? DriverStatusSheet(
+                            isOnline: _isOnline,
+                            isLoadingLocation: _isLoadingLocation,
+                            currentLocationLabel: _currentLocationLabel,
+                            isLoadingMetrics: _isLoadingMetrics,
+                            metricsError: _metricsError,
+                            todayEarnings: _todayEarnings,
+                            driverRating: _driverRating,
+                            onToggleOnline: _toggleOnlineState,
+                          )
+                        : ActiveTripSheet(
+                            isTripStarted: _isTripStarted,
+                            truckLabel: _activeTruckLabel,
+                            currentLocationLabel: _currentLocationLabel,
+                            destinationAddress:
+                                _destination?.address ?? 'Destination',
+                            distance: _activeTripDistance,
+                            duration: _activeTripDuration,
+                            payout: _activeTripPayout,
+                            onStartTrip: () async {
+                              if (_activeTripId == null) {
+                                setState(() => _isTripStarted = true);
+                                return;
+                              }
+                              try {
+                                await _tripService.startTrip(_activeTripId!);
+                                if (mounted) {
+                                  setState(() => _isTripStarted = true);
+                                }
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content:
+                                            Text('Failed to start trip: $e')),
+                                  );
+                                }
+                              }
+                            },
+                            onCompleteTrip: () async {
+                              await _completeRide();
+                            },
+                            onCancel: _clearDestination,
+                            onOpenMaps: _openGoogleMapsRoute,
+                          ),
                   ),
                 ),
               ),
@@ -985,7 +1036,7 @@ class _HomeScreenState extends State<HomeScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'NAVIGATION ACTIVE',
+                  AppLocalizations.of(context)!.navigationActive,
                   style: GoogleFonts.dmSans(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
@@ -994,7 +1045,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 Text(
-                  'Heading to ${_destination?.address ?? "Destination"}',
+                  AppLocalizations.of(context)!.headingTo(_destination?.address ?? ''),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: GoogleFonts.dmSans(
@@ -1053,19 +1104,18 @@ class _HomeScreenState extends State<HomeScreen> {
     return DateTime(year, month, day);
   }
 
-  Widget _buildMapBody(BuildContext context,
-      {required bool showDestinationChip}) {
+  Widget _buildMapBody(BuildContext context) {
     // Show loading spinner while GPS is being fetched
     if (_isLoadingLocation) {
       return Container(
         color: Theme.of(context).colorScheme.surfaceContainerLowest,
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Fetching your location...'),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(AppLocalizations.of(context)!.fetchingLocation),
             ],
           ),
         ),
@@ -1084,7 +1134,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   size: 48, color: TruxifyColors.errorRed),
               const SizedBox(height: 12),
               Text(
-                _locationError ?? 'Location unavailable',
+                _locationError ?? AppLocalizations.of(context)!.locationUnavailable,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.dmSans(fontSize: 14),
               ),
@@ -1092,7 +1142,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ElevatedButton.icon(
                 onPressed: _initLocation,
                 icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Retry'),
+                label: Text(AppLocalizations.of(context)!.retry),
               ),
             ],
           ),
@@ -1263,7 +1313,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           Expanded(
                             child: _isLoadingLocation
                                 ? Text(
-                                    'Fetching your location...',
+                                    AppLocalizations.of(context)!.fetchingLocation,
                                     style: GoogleFonts.dmSans(
                                       fontSize: 13,
                                       color:
@@ -1283,7 +1333,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       )
                                     : Text(
                                         _currentLocationText ??
-                                            'Tap to refresh location',
+                                            AppLocalizations.of(context)!.tapToRefresh,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: GoogleFonts.dmSans(
@@ -1325,7 +1375,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       child: Text(
-                        _destination?.address ?? 'Where are you heading?',
+                        _destination?.address ?? AppLocalizations.of(context)!.whereAreYouHeading,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.dmSans(
@@ -1390,7 +1440,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _isOnline ? 'Online & Ready' : 'Offline',
+                    _isOnline ? AppLocalizations.of(context)!.onlineAndReady : AppLocalizations.of(context)!.offline,
                     style: GoogleFonts.dmSans(
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
@@ -1409,10 +1459,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 8),
           Text(
             !_isOnline
-                ? 'Offline. Go online to receive load assignments.'
+                ? AppLocalizations.of(context)!.offlineGoOnline
                 : _isLoadingLocation
-                    ? 'Radar active. Fetching your location...'
-                    : 'Radar active. Looking for load assignments near $_currentLocationLabel...',
+                    ? AppLocalizations.of(context)!.radarActiveFetching
+                    : '${AppLocalizations.of(context)!.radarActiveLooking} ${_currentLocationLabel(context)}...',
             style: GoogleFonts.dmSans(
               fontSize: 11,
               color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1447,7 +1497,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.account_balance_wallet_outlined,
             value: payValue,
-            label: 'Today\'s Pay',
+            label: AppLocalizations.of(context)!.todayPay,
             labelKey: const Key('today_pay_label'),
           ),
         ),
@@ -1456,7 +1506,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.timer_outlined,
             value: hoursValue,
-            label: 'Shift Hours',
+            label: AppLocalizations.of(context)!.shiftHours,
           ),
         ),
         const SizedBox(width: 8),
@@ -1464,7 +1514,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.star_border_rounded,
             value: ratingValue,
-            label: 'Rating',
+            label: AppLocalizations.of(context)!.rating,
           ),
         ),
       ],
@@ -1488,7 +1538,7 @@ class _HomeScreenState extends State<HomeScreen> {
               size: 14, color: TruxifyColors.errorRed),
           const SizedBox(width: 6),
           Text(
-            'Metrics unavailable',
+            AppLocalizations.of(context)!.metricsUnavailable,
             style: GoogleFonts.dmSans(
               fontSize: 11,
               color: TruxifyColors.errorRed,
@@ -1541,15 +1591,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openGoogleMapsRoute() async {
     if (_destination == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No destination available')),
+        SnackBar(content: Text(AppLocalizations.of(context)!.noDestinationAvailable)),
       );
       return;
     }
 
     if (_currentLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Current location unavailable. Please retry.')),
+        SnackBar(
+            content: Text(AppLocalizations.of(context)!.currentLocationUnavailable)),
       );
       return;
     }
@@ -1576,13 +1626,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!launched && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open Google Maps')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.unableToOpenGoogleMaps)),
         );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to generate route')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.failedToGenerateRoute)),
         );
       }
     }
@@ -1620,7 +1670,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  _isTripStarted ? 'EN-ROUTE' : 'ASSIGNED LOAD',
+                  _isTripStarted ? AppLocalizations.of(context)!.enRoute : AppLocalizations.of(context)!.assignedLoad,
                   style: GoogleFonts.dmSans(
                     fontSize: 9,
                     fontWeight: FontWeight.bold,
@@ -1649,7 +1699,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            '$_currentLocationLabel → $routeStr',
+            '${_currentLocationLabel(context)} → $routeStr',
             style: GoogleFonts.dmSans(
               fontSize: 15,
               fontWeight: FontWeight.bold,
@@ -1660,15 +1710,15 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _buildTripSpec('Distance', _activeTripDistance.isNotEmpty ? _activeTripDistance : '--'),
-              _buildTripSpec('Est. Duration', _activeTripDuration.isNotEmpty ? _activeTripDuration : '--'),
-              _buildTripSpec('Est. Payout', _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.distance, _activeTripDistance.isNotEmpty ? _activeTripDistance : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.estDuration, _activeTripDuration.isNotEmpty ? _activeTripDuration : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.estPayout, _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
             ],
           ),
           const SizedBox(height: 16),
           if (_isTripStarted) ...[
             SlideToConfirmButton(
-              label: 'Slide to Complete Trip',
+              label: AppLocalizations.of(context)!.slideToCompleteTrip,
               backgroundColor: TruxifyColors.success,
               onConfirmed: () async {
               await _completeRide();
@@ -1676,7 +1726,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ] else ...[
             SlideToConfirmButton(
-              label: 'Slide to Start Trip',
+              label: AppLocalizations.of(context)!.slideToStartTrip,
               backgroundColor: TruxifyColors.accent,
               onConfirmed: () async {
                 if (_activeTripId == null) {
@@ -1691,7 +1741,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 } catch (e) {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to start trip: $e')),
+                      SnackBar(content: Text(AppLocalizations.of(context)!.failedToStartTrip)),
                     );
                   }
                 }
@@ -1704,7 +1754,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Text(
-                    'Cancel Assignment',
+                    AppLocalizations.of(context)!.cancelAssignment,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
@@ -1744,3 +1794,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+

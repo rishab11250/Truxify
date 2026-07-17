@@ -1,16 +1,21 @@
 import logger from '../middleware/logger.js';
+import { validatePricePrediction, convertToPaisa, RejectionReason } from '../lib/predictionValidator.js';
+import { LRUCache } from '../utils/cache.js';
+
+const demandCache = new LRUCache(100, 15 * 60 * 1000);
+const priceCache = new LRUCache(100, 15 * 60 * 1000);
 
 // Single source of truth for ML engine base URL
 const DEFAULT_ML_ENGINE_URL = 'http://localhost:8001';
 
 // Startup validation
 if (!process.env.ML_API_KEY) {
-    logger.warn('[ML] WARNING: ML_API_KEY is not set. ML features will be unavailable.');
+    logger.warn('[ML] WARNING: ML_API_KEY is not set. All ML API endpoints will return 503. Set ML_API_KEY in your environment.');
 }
 
 function guardMlApiKey() {
   if (!process.env.ML_API_KEY) {
-    throw new Error("[ML] ML_API_KEY is not configured. ML features are unavailable.");
+    throw new Error("[ML] ML_API_KEY is not configured. All ML endpoints will return 503. Set ML_API_KEY to enable ML features.");
   }
 }
 
@@ -63,22 +68,34 @@ function getBaseUrl() {
  */
 export async function predictDemand(features = {}) {
   guardMlApiKey();
-    const url = `${getBaseUrl()}/predict/demand`;
+  const cacheKey = JSON.stringify(features);
+  const cached = demandCache.get(cacheKey);
+  if (cached !== undefined) return cached;
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify(features),
-        signal: AbortSignal.timeout(5000),
-    });
+  const url = `${getBaseUrl()}/predict/demand`;
 
-    return handleResponse(response);
+  const response = await fetch(url, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(features),
+      signal: AbortSignal.timeout(5000),
+  });
+
+  const result = await handleResponse(response);
+  demandCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Predicts freight price
+ * Predicts freight price.
+ *
+ * Returns the validated ML response with `estimatedPricePaisa` (paisa integer)
+ * and `estimatedPriceInr` (INR float) added. Throws on any validation failure
+ * so callers can transparently fall back to deterministic pricing.
+ *
  * @param {object} params
- * @returns {Promise<{estimated_price: number, currency: string}>}
+ * @returns {Promise<{estimated_price: number, currency: string, estimatedPricePaisa: number}>}
+ * @throws {Error} on HTTP failure, timeout, or prediction validation failure
  */
 export async function predictPrice({
     distanceKm,
@@ -88,24 +105,74 @@ export async function predictPrice({
     routeDestination = '',
 } = {}) {
   guardMlApiKey();
-    const url = `${getBaseUrl()}/predict/price`;
+  
+  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination });
+  const cached = priceCache.get(cacheKey);
+  if (cached !== undefined) return cached;
 
-    const payload = {
-        distance_km: distanceKm,
-        cargo_weight_kg: cargoWeightKg,
-        truck_type: truckType,
-        route_origin: routeOrigin,
-        route_destination: routeDestination,
-    };
+  const url = `${getBaseUrl()}/predict/price`;
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(5000),
-    });
+  const payload = {
+      distance_km: distanceKm,
+      cargo_weight_kg: cargoWeightKg,
+      truck_type: truckType,
+      route_origin: routeOrigin,
+      route_destination: routeDestination,
+  };
 
-  return handleResponse(response);
+  const response = await fetch(url, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+  });
+
+  const raw = await handleResponse(response);
+
+  const validated = validatePricePrediction(raw);
+  if (!validated.ok) {
+      logger.warn({
+          reason: validated.reason,
+          detail: validated.detail,
+          response_keys: raw && typeof raw === 'object' ? Object.keys(raw) : typeof raw,
+      }, '[ML] Price prediction rejected by validator');
+      throw new Error(`[ML] Invalid prediction: ${validated.reason} — ${validated.detail}`);
+  }
+
+  logger.debug({
+      estimated_price_inr: validated.validated.estimated_price,
+      confidence: validated.validated.confidence,
+  }, '[ML] Price prediction validated successfully');
+
+  const result = {
+      ...validated.validated,
+      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price),
+      estimatedPriceInr: validated.validated.estimated_price,
+  };
+  priceCache.set(cacheKey, result);
+  return result;
+  const result = validatePricePrediction(raw);
+  if (!result.ok) {
+      logger.warn({
+          reason: result.reason,
+          detail: result.detail,
+          response_keys: raw && typeof raw === 'object' ? Object.keys(raw) : typeof raw,
+      }, '[ML] Price prediction rejected by validator');
+      throw new Error(`[ML] Invalid prediction: ${result.reason} — ${result.detail}`);
+  }
+
+  logger.debug({
+      estimated_price_inr: result.validated.estimated_price,
+      confidence: result.validated.confidence,
+  }, '[ML] Price prediction validated successfully');
+
+  const validated = {
+      ...result.validated,
+      estimatedPricePaisa: convertToPaisa(result.validated.estimated_price),
+      estimatedPriceInr: result.validated.estimated_price,
+  };
+  priceCache.set(cacheKey, validated);
+  return validated;
 }
 
 /**
@@ -314,3 +381,8 @@ export async function listModels() {
   });
   return handleResponse(response);
 }
+
+export const __testing = {
+  demandCache,
+  priceCache
+};

@@ -76,6 +76,38 @@ void main() {
     expect(order404, isNull);
   });
 
+  test('fetchOrders accepts wrapped and bare history lists', () async {
+    when(() => apiClient.get('/api/orders/history'))
+        .thenAnswer((_) async => {'history': [{'id': 'ORD-1'}]});
+
+    expect(await orderService.fetchOrders(), [
+      {'id': 'ORD-1'},
+    ]);
+
+    when(() => apiClient.get('/api/orders/history'))
+        .thenAnswer((_) async => [{'id': 'ORD-2'}]);
+
+    expect(await orderService.fetchHistoryOrders(), [
+      {'id': 'ORD-2'},
+    ]);
+  });
+
+  test('fetchOrders rejects malformed history payloads', () async {
+    when(() => apiClient.get('/api/orders/history'))
+        .thenAnswer((_) async => {'history': 'not-a-list'});
+
+    await expectLater(
+      orderService.fetchOrders,
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('Failed to fetch orders'),
+        ),
+      ),
+    );
+  });
+
   test('fetchTruckNumber encodes truck id path segment', () async {
     when(() => apiClient.get('/api/trucks/truck%2F123%23plate/number'))
         .thenAnswer((_) async => {'number_plate': 'MH-01-AB-1234'});
@@ -86,6 +118,28 @@ void main() {
     verify(
       () => apiClient.get('/api/trucks/truck%2F123%23plate/number'),
     ).called(1);
+  });
+
+  test('searchTrucks rejects malformed response payloads', () async {
+    when(() => apiClient.get(any(that: startsWith('/api/trucks/search'))))
+        .thenAnswer((_) async => {'trucks': []});
+
+    await expectLater(
+      () => orderService.searchTrucks(
+        pickupLat: 12.3,
+        pickupLng: 45.6,
+        dropLat: 78.9,
+        dropLng: 12.3,
+        weightTonnes: 5.5,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('Failed to search trucks'),
+        ),
+      ),
+    );
   });
 
   group('estimatePriceRange', () {
@@ -163,6 +217,111 @@ void main() {
       );
 
       expect(result, isNull);
+    });
+  });
+
+  group('submitRating', () {
+    test('sends correct payload to POST /api/orders/:id/ratings', () async {
+      when(() => apiClient.post(
+            '/api/orders/ORD-100/ratings',
+            body: any(named: 'body'),
+          )).thenAnswer((_) async => {
+            'message': 'Rating submitted successfully.',
+            'rating': {
+              'order_display_id': 'ORD-100',
+              'customer_id': 'user_123',
+              'driver_id': 'driver-abc',
+              'stars': 5,
+              'comment': 'Great delivery!',
+            },
+          });
+
+      final result = await orderService.submitRating(
+        orderId: 'ORD-100',
+        stars: 5,
+        comment: 'Great delivery!',
+      );
+
+      expect(result['message'], equals('Rating submitted successfully.'));
+      expect(result['rating']['stars'], equals(5));
+
+      verify(
+        () => apiClient.post(
+          '/api/orders/ORD-100/ratings',
+          body: {'stars': 5, 'comment': 'Great delivery!'},
+        ),
+      ).called(1);
+    });
+
+    test('omits comment when null or empty', () async {
+      when(() => apiClient.post(
+            '/api/orders/ORD-200/ratings',
+            body: any(named: 'body'),
+          )).thenAnswer((_) async => {
+            'message': 'Rating submitted successfully.',
+            'rating': {'stars': 3},
+          });
+
+      await orderService.submitRating(orderId: 'ORD-200', stars: 3);
+
+      verify(
+        () => apiClient.post(
+          '/api/orders/ORD-200/ratings',
+          body: {'stars': 3},
+        ),
+      ).called(1);
+    });
+
+    test('throws StateError on ApiException', () async {
+      when(() => apiClient.post(
+            any(),
+            body: any(named: 'body'),
+          )).thenThrow(const ApiException(400, 'Order must be delivered'));
+
+      await expectLater(
+        () => orderService.submitRating(orderId: 'ORD-300', stars: 4),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('Order must be delivered'),
+          ),
+        ),
+      );
+    });
+
+    test('throws StateError on generic exception', () async {
+      when(() => apiClient.post(
+            any(),
+            body: any(named: 'body'),
+          )).thenThrow(Exception('network timeout'));
+
+      await expectLater(
+        () => orderService.submitRating(orderId: 'ORD-400', stars: 2),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('Failed to submit rating'),
+          ),
+        ),
+      );
+    });
+
+    test('encodes special characters in order ID', () async {
+      when(() => apiClient.post(
+            '/api/orders/ORD%2F123%23abc/ratings',
+            body: any(named: 'body'),
+          )).thenAnswer((_) async => {'message': 'ok'});
+
+      await orderService.submitRating(orderId: 'ORD/123#abc', stars: 1);
+
+      verify(
+        () => apiClient.post(
+          '/api/orders/ORD%2F123%23abc/ratings',
+          body: {'stars': 1},
+        ),
+      ).called(1);
     });
   });
 }

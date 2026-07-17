@@ -6,6 +6,13 @@ class TruckRepository {
   TruckRepository({SupabaseClient? client})
       : _client = client ?? Supabase.instance.client;
 
+  static const Set<String> _allowedTicketStatuses = {
+    'open',
+    'in_progress',
+    'resolved',
+    'closed',
+  };
+
   final SupabaseClient _client;
 
   Future<Truck?> fetchTruckForDriver(String driverId) async {
@@ -30,7 +37,16 @@ class TruckRepository {
         .eq('truck_id', truckId)
         .order('created_at', ascending: false);
 
-    return List<Map<String, dynamic>>.from(response)
+    if (response is! List) {
+      throw StateError('Unexpected ticket response type');
+    }
+
+    return response
+        .map((item) {
+          if (item is Map<String, dynamic>) return item;
+          if (item is Map) return Map<String, dynamic>.from(item);
+          throw StateError('Unexpected ticket item type');
+        })
         .map(TruckMaintenanceTicket.fromJson)
         .toList(growable: false);
   }
@@ -58,21 +74,28 @@ class TruckRepository {
 
   Future<TruckMaintenanceTicket?> updateTicketStatus({
     required int ticketId,
+    required String driverId,
     required String status,
     String? resolutionNotes,
   }) async {
-    final update = <String, dynamic>{'status': status};
+    final normalizedStatus = status.trim().toLowerCase();
+    if (!_allowedTicketStatuses.contains(normalizedStatus)) {
+      throw ArgumentError.value(status, 'status', 'unsupported ticket status');
+    }
+
+    final update = <String, dynamic>{'status': normalizedStatus};
     if (resolutionNotes != null) update['resolution_notes'] = resolutionNotes;
-    if (status == 'resolved' || status == 'closed') {
+    if (normalizedStatus == 'resolved' || normalizedStatus == 'closed') {
       update['resolved_at'] = DateTime.now().toIso8601String();
     }
     final response = await _client
         .from('truck_maintenance_tickets')
         .update(update)
         .eq('id', ticketId)
+        .eq('driver_id', driverId)
         .select()
-        .single();
-    return TruckMaintenanceTicket.fromJson(response);
+        .maybeSingle();
+    return response == null ? null : TruckMaintenanceTicket.fromJson(response);
   }
 
   Future<bool> updateTruckMileage({
@@ -82,8 +105,10 @@ class TruckRepository {
     final response = await _client
         .from('trucks')
         .update({'mileage_km': currentMileage, 'updated_at': DateTime.now().toIso8601String()})
-        .eq('id', truckId);
-    return response > 0;
+        .eq('id', truckId)
+        .select('id')
+        .maybeSingle();
+    return response != null;
   }
 
   Future<List<Map<String, dynamic>>> fetchTruckDocuments(String truckId) async {
@@ -92,6 +117,13 @@ class TruckRepository {
         .select()
         .eq('truck_id', truckId)
         .order('expires_at', ascending: true);
-    return List<Map<String, dynamic>>.from(response);
+    if (response is! List) {
+      throw StateError('Unexpected truck document response type');
+    }
+    return response.map((item) {
+      if (item is Map<String, dynamic>) return item;
+      if (item is Map) return Map<String, dynamic>.from(item);
+      throw StateError('Unexpected truck document item type');
+    }).toList(growable: false);
   }
 }

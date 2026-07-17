@@ -1,5 +1,6 @@
-import { ethers } from 'ethers';
+import { paisaToMaticWei } from '../escrow.js';
 import { DomainError } from './domainError.js';
+import { measureExecution } from '../../core/performanceMetrics.js';
 
 // Re-export for backward compatibility — prefer importing from domainError.js
 export { DomainError } from './domainError.js';
@@ -15,6 +16,7 @@ export class BidAcceptanceService {
   }
 
   async acceptBid({ orderId, bidId, customerId }) {
+    return measureExecution('BidAcceptanceService.acceptBid', async () => {
     const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id');
     if (orderErr) {
       throw new DomainError(500, { error: 'Failed to retrieve order.', details: orderErr.message });
@@ -72,16 +74,20 @@ export class BidAcceptanceService {
     }
 
     // Build the escrow deposit transaction
-    let depositTx;
-    let bookingId;
-    const amountWei = ethers.parseEther((bid.bid_amount / 100).toFixed(2).toString());
-    const buildResult = await this.buildDepositTxFn(order.order_display_id, customerWallet, driverWallet, amountWei);
-    depositTx = buildResult;
-    bookingId = buildResult?.bookingId || `escrow:${order.order_display_id}`;
+    let depositTx = null;
+    let bookingId = null;
+    const amountWei = paisaToMaticWei(bid.bid_amount);
+    try {
+      const buildResult = await this.buildDepositTxFn(order.order_display_id, customerWallet, driverWallet, amountWei);
+      depositTx = buildResult;
+      bookingId = buildResult?.bookingId || `escrow:${order.order_display_id}`;
+    } catch (buildErr) {
+      throw buildErr; // Let it bubble up as a generic error to return 500
+    }
 
     // Guard against silent escrow disable: if buildDepositTx returned
     // null txData (contract not initialised), reject immediately.
-    if (!buildResult?.txData) {
+    if (!depositTx?.txData) {
       this.logger?.error?.('[escrow] Escrow deposit tx could not be built — escrow contract is not reachable or misconfigured.');
       throw new DomainError(502, {
         error: 'Escrow is not configured. Escrow deposit transaction could not be built.',
@@ -108,6 +114,7 @@ export class BidAcceptanceService {
       p_truck_number: truckInfo?.number_plate || 'N/A',
       p_bid_amount: bid.bid_amount,
       p_order_display_id: order.order_display_id,
+      p_expected_version: order.version,
     });
 
     if (rpcErr) {
@@ -124,17 +131,19 @@ export class BidAcceptanceService {
       if (revertErr) {
         this.logger?.error?.('[escrow] Failed to revert escrow status after RPC failure:', revertErr.message);
       }
+
+      if (rpcErr.message?.includes('OPTIMISTIC_LOCK_FAIL') || rpcErr.message?.includes('Load offer is no longer available') || rpcErr.message?.includes('Order is no longer pending')) {
+        throw new DomainError(409, {
+          error: 'Conflict: This load offer was already accepted or is no longer available.',
+          details: rpcErr.message
+        });
+      }
+
       throw new DomainError(500, {
         error: 'Failed to accept bid atomically.',
         details: rpcErr.message,
         recovery: 'The escrow deposit has been refunded. Please try again.'
       });
-    }
-
-    try {
-      await this.recordDepositTxFn(bookingId, depositTx?.hash || depositTx?.transactionHash || '');
-    } catch (recordErr) {
-      this.logger?.warn?.('[escrow] Failed to record deposit TX:', recordErr.message);
     }
 
     if (this.notificationDispatcher) {
@@ -158,5 +167,6 @@ export class BidAcceptanceService {
         depositTx,
       },
     };
+    });
   }
 }
