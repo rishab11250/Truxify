@@ -542,30 +542,6 @@ router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:subm
   try {
     const orderId = req.params.id;
     const { stars, comment } = req.body;
-    const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId, 'id, order_display_id, customer_id, driver_id, status');
-
-    if (orderErr) {
-      return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
-    }
-
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    if (order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-
-    if (!['delivered', 'payment_released'].includes(order.status)) {
-      return res.status(400).json({ error: 'Order must be delivered before a rating can be submitted.' });
-    }
-
-    if (!order.driver_id) {
-      return res.status(400).json({ error: 'Order does not have an assigned driver.' });
-    }
-
-
-  try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, driver_id, status');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
