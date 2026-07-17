@@ -301,17 +301,27 @@ export async function scoreTrust(entityId) {
 
 /**
  * Finds deadhead (return-trip) loads for a truck to avoid empty backhauls.
- * @param {string} truckId
- * @returns {Promise<{loads: Array, revenue: number}>}
+ * @param {object} params
+ * @param {object} params.driverDestination - { lat, lng }
+ * @param {object} params.truckSpecs - { max_weight_kg, max_length_m, max_width_m, max_height_m }
+ * @param {string} params.arrivalTime - ISO datetime string
+ * @param {Array}  params.availableLoads - list of available load objects
+ * @returns {Promise<{recommendations: Array}>}
  */
-export async function matchDeadhead(truckId) {
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+export async function matchDeadhead({ driverDestination, truckSpecs, arrivalTime, availableLoads }) {
+  guardMlApiKey();
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/match/deadhead`;
   const response = await fetch(url, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ truck_id: truckId }),
-    signal: AbortSignal.timeout(5000),
+    body: JSON.stringify({
+      driver_destination: driverDestination,
+      truck_specs: truckSpecs,
+      arrival_time: arrivalTime,
+      available_loads: availableLoads,
+    }),
+    signal: AbortSignal.timeout(10000),
   });
   return handleResponse(response);
 }

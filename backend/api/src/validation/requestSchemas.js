@@ -272,6 +272,40 @@ export const documentCheckSchema = z.object({
   driverId: uuidSchema,
 }).strict();
 
+// ── Deadhead matching schemas ──────────────────────────────────────────
+
+const locationPointSchema = z.object({
+  lat: latitudeSchema,
+  lng: longitudeSchema,
+});
+
+const truckSpecsSchema = z.object({
+  max_weight_kg: z.number().positive({ message: 'max_weight_kg must be > 0' }),
+  max_length_m: z.number().positive({ message: 'max_length_m must be > 0' }),
+  max_width_m: z.number().positive({ message: 'max_width_m must be > 0' }),
+  max_height_m: z.number().positive({ message: 'max_height_m must be > 0' }),
+});
+
+const availableLoadSchema = z.object({
+  load_id: z.string().min(1),
+  origin_lat: latitudeSchema,
+  origin_lng: longitudeSchema,
+  dest_lat: latitudeSchema,
+  dest_lng: longitudeSchema,
+  weight_kg: z.number().positive(),
+  length_m: z.number().positive(),
+  width_m: z.number().positive(),
+  height_m: z.number().positive(),
+  pickup_deadline: isoDateStringSchema,
+  payment_inr: z.number().positive(),
+});
+
+export const matchDeadheadSchema = z.object({
+  driver_destination: locationPointSchema,
+  truck_specs: truckSpecsSchema,
+  arrival_time: isoDateStringSchema,
+  available_loads: z.array(availableLoadSchema).min(1, 'At least one available load is required').max(50, 'Too many loads'),
+}).strict();
 // ── Public Order Tracking schemas ─────────────────────────────────────────
 
 export const shareTrackingSchema = z.object({}).strict();

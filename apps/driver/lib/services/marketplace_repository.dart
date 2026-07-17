@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/app_models.dart';
+import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
 import 'api_client.dart';
 
@@ -113,6 +114,44 @@ class MarketplaceRepository {
           ? decoded['bids'] as List? ?? const []
           : decoded as List;
       return body.cast<Map<String, dynamic>>().map(DriverBid.fromJson).toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
+  }
+
+  Future<List<DeadheadRecommendation>> fetchDeadheadRecommendations({
+    required double destLat,
+    required double destLng,
+    required double maxWeightKg,
+    required double maxLengthM,
+    required double maxWidthM,
+    required double maxHeightM,
+    required String arrivalTime,
+    required List<Map<String, dynamic>> availableLoads,
+  }) async {
+    final path = '/api/driver/match/deadhead';
+    try {
+      final decoded = await _apiClient.post(
+        path,
+        body: <String, dynamic>{
+          'driver_destination': {'lat': destLat, 'lng': destLng},
+          'truck_specs': {
+            'max_weight_kg': maxWeightKg,
+            'max_length_m': maxLengthM,
+            'max_width_m': maxWidthM,
+            'max_height_m': maxHeightM,
+          },
+          'arrival_time': arrivalTime,
+          'available_loads': availableLoads,
+        },
+      ) as Map<String, dynamic>;
+
+      final recs = decoded['recommendations'] as List? ?? const [];
+      return recs
+          .cast<Map<String, dynamic>>()
+          .map(DeadheadRecommendation.fromJson)
+          .toList(growable: false);
     } catch (e) {
       if (e is ApiException) throw StateError(e.message);
       rethrow;
