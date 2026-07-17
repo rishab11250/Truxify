@@ -2,13 +2,9 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
-import { redisClient, mongoDb, supabase, createUserClient } from '../config/db.js';
-import { OrderRepository } from '../repositories/orderRepository.js';
+import { mongoDb, supabase } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
-import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
-import { computeOrderPricing } from '../lib/pricing.js';
-
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
@@ -24,33 +20,9 @@ import {
   cancelOrderSchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
-import {
-  escrowRefund,
-  buildDepositTx,
-  recordDepositTx,
-  submitEscrowRefund,
-  confirmEscrowRefund,
-  getEscrowBookingId,
-} from '../services/escrow.js';
-import { BidAcceptanceService } from '../services/order/bidAcceptanceService.js';
-import { DeliveryVerificationService } from '../services/order/deliveryVerificationService.js';
-import {
-  sendDeliveryOtpNotification,
-  storeDeliveryOtp,
-  getActiveDeliveryOtp,
-  verifyDeliveryOtp,
-  expireDeliveryOtps
-} from '../services/notificationService.js';
-import { OrderTimelineService } from '../services/order/orderTimelineService.js';
-import { createOrder } from '../services/order/orderCreationService.js';
-import { OrderValidationService } from '../services/order/orderValidationService.js';
-import { OrderMilestoneService } from '../services/order/orderMilestoneService.js';
+import { expireDeliveryOtps } from '../services/notificationService.js';
+import { DomainError } from '../services/order/domainError.js';
 import { predictDemand, predictPrice } from '../services/ml.js';
-import {
-  verifyDelivery,
-  resendDeliveryOtp,
-} from '../services/order/deliveryVerificationService.js';
-
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
@@ -67,13 +39,17 @@ const orderMilestoneService = new OrderMilestoneService({ orderValidationService
 
 const bidAcceptanceService = new BidAcceptanceService({
   orderRepository,
-  buildDepositTxFn: buildDepositTx,
-  recordDepositTxFn: recordDepositTx,
-  escrowRefundFn: escrowRefund,
-  logger,
-});
-const deliveryVerificationService = new DeliveryVerificationService(orderRepository);
-
+  orderValidationService,
+  orderMilestoneService,
+  orderTimelineService,
+  orderLifecycleService,
+  deliveryVerificationService,
+  buildDepositTx,
+  recordDepositTx,
+  submitEscrowRefund,
+  confirmEscrowRefund,
+  escrowRefund,
+} from '../core/container.js';
 
 const router = express.Router();
 
@@ -452,24 +428,11 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
 // ============================================================================
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   try {
-    let order = null;
-    if (uuidRegex.test(orderId)) {
-      const { data: orderById } = await orderRepository.findOrderForTimeline(orderId);
-      order = orderById;
-    }
-    if (!order) {
-      const { data: orderByDisplay } = await orderRepository.findOrderByDisplayForTimeline(orderId);
-      order = orderByDisplay;
-    }
-
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
-
-    if (order.customer_id !== req.user.id && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own or are not assigned to this order.' });
-    }
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertOrderAccess(order, req.user);
 
     const timeline = await orderTimelineService.getOrderTimeline(order.order_display_id);
     res.json(timeline);
@@ -489,23 +452,6 @@ router.post('/:id/bids', authenticate, userLimiter, requirePolicy('bid:submit'),
   try {
     const loadOfferId = req.params.id;
     const { bid_amount } = req.body;
-    const { data: offer, error: offerErr } = await orderRepository.findLoadOfferById(loadOfferId);
-    if (offerErr || !offer) return res.status(404).json({ error: 'Load offer not found.' });
-    if (offer.status !== 'available') return res.status(410).json({ error: 'Load is no longer available for bidding.' });
-    if (offer.customer_id === req.user.id) return res.status(403).json({ error: 'You cannot bid on your own load offer' });
-
-    const { data: driverDetails, error: driverDetailsErr } = await orderRepository.findDriverDetailMinimal(req.user.id);
-    if (driverDetailsErr) return res.status(500).json({ error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
-    if (!driverDetails?.truck_id) return res.status(400).json({ error: 'You must assign a valid truck to your profile before bidding on loads' });
-
-    const { data: truck, error: truckErr } = await orderRepository.findTruckById(driverDetails.truck_id);
-    if (truckErr) return res.status(500).json({ error: 'Failed to verify assigned truck.', details: truckErr.message });
-    if (!truck) return res.status(400).json({ error: 'Assigned truck record could not be found' });
-
-    const { data: existingBid, error: existingBidErr } = await orderRepository.findExistingBid(loadOfferId, req.user.id, 'pending');
-    if (existingBidErr) return res.status(500).json({ error: 'Failed to verify existing bids.', details: existingBidErr.message });
-    if (existingBid) return res.status(409).json({ error: 'You already have a pending bid for this load.' });
-
     const offer = await orderValidationService.assertLoadOfferAvailable(loadOfferId);
     orderValidationService.assertNotOwnLoad(offer.customer_id, req.user.id);
     await orderValidationService.assertTruckAssigned(req.user.id);
@@ -531,6 +477,7 @@ router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:subm
   try {
     const orderId = req.params.id;
     const { stars, comment } = req.body;
+
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, driver_id, status');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
@@ -649,7 +596,6 @@ router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view-bid
 // ============================================================================
 
 router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy('order:accept-bid'), requireIdempotency(86400), validateParams(acceptBidParamsSchema), async (req, res) => {
-
   try {
     const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.status(result.status).json(result.body);
@@ -714,7 +660,6 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('de
 // 14. RESEND DELIVERY OTP (DRIVER)
 // ============================================================================
 router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requirePolicy('delivery:resend-otp'), validateParams(paramIdSchema), async (req, res) => {
-  const { id: orderId } = req.params;
   try {
     const orderId = req.params.id;
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, driver_id, customer_id, status');
@@ -837,8 +782,6 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
 // 16. CANCEL ORDER AND REFUND ESCROW (CUSTOMER)
 // ============================================================================
 router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cancel'), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
-  const { id: orderId } = req.params;
-  const { reason } = req.body;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
     orderValidationService.assertOrderFound(order);
