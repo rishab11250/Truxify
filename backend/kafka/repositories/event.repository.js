@@ -50,17 +50,19 @@ class EventRepository {
   }
 
   async getEventById(eventId) {
-    const { data, error } = await supabase
-      .from('events')
-      .select('*')
-      .eq('event_id', eventId)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('events')
+        .select('*')
+        .eq('event_id', eventId)
+        .maybeSingle();
 
-    if (error) {
-      if (error.code === 'PGRST116') return null;
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      logger.error('Failed to get event:', error);
       throw error;
     }
-    return data;
   }
 
   async replayEvents(orderId) {
