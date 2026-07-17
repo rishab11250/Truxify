@@ -1,6 +1,8 @@
 import { WebSocketServer } from 'ws';
+import jwt from 'jsonwebtoken';
 import logger from '../../middleware/logger.js';
 import Redis from 'ioredis';
+import { supabase } from '../../config/db.js';
 
 class WebRTCSignalingServer {
   constructor(server) {
@@ -17,13 +19,35 @@ class WebRTCSignalingServer {
 
   setupWebSocket() {
     this.wss.on('connection', (ws, req) => {
-      const peerId = this.generatePeerId();
       const url = new URL(req.url, `http://${req.headers.host}`);
+
+      // Authenticate via token query parameter or Authorization header
+      const token = url.searchParams.get('token')
+        || req.headers.authorization?.replace('Bearer ', '');
+
+      if (!token) {
+        logger.warn('WebRTC connection rejected: no token provided');
+        ws.close(4001, 'Authentication required');
+        return;
+      }
+
+      let decoded;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+      } catch (err) {
+        logger.warn(`WebRTC connection rejected: invalid token — ${err.message}`);
+        ws.close(4001, 'Invalid token');
+        return;
+      }
+
+      const peerId = this.generatePeerId();
       const meshId = url.searchParams.get('meshId') || this.getOrCreateMesh();
-      
-      // Store peer
+
+      // Store peer with authenticated user info
       this.peers.set(peerId, {
         ws,
+        userId: decoded.sub,
+        role: decoded.role,
         location: null,
         meshId,
         connectedAt: Date.now(),
@@ -130,8 +154,20 @@ class WebRTCSignalingServer {
 
   async relayWebRTCMessage(fromPeerId, message) {
     const { targetPeerId, data } = message;
+    const sourcePeer = this.peers.get(fromPeerId);
     const targetPeer = this.peers.get(targetPeerId);
-    if (targetPeer && targetPeer.ws.readyState === 1) {
+
+    if (!sourcePeer || !targetPeer) {
+      logger.warn(`WebRTC relay blocked for missing peer: ${fromPeerId} -> ${targetPeerId}`);
+      return;
+    }
+
+    if (sourcePeer.meshId !== targetPeer.meshId) {
+      logger.warn(`WebRTC relay blocked across meshes: ${fromPeerId} -> ${targetPeerId}`);
+      return;
+    }
+
+    if (targetPeer.ws.readyState === 1) {
       this.sendToPeer(targetPeerId, {
         ...data,
         fromPeerId
@@ -139,28 +175,56 @@ class WebRTCSignalingServer {
     }
   }
 
+  isValidLocation(location) {
+    const lat = Number(location?.lat);
+    const lng = Number(location?.lng);
+    return Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180;
+  }
+
+  normalizeLocation(location) {
+    return {
+      ...location,
+      lat: Number(location.lat),
+      lng: Number(location.lng)
+    };
+  }
+
   async handleGPSData(peerId, data) {
+    if (!data || typeof data !== 'object' || !this.isValidLocation(data.location)) {
+      logger.warn(`Invalid WebRTC GPS payload dropped for peer ${peerId}`);
+      return;
+    }
+
+    const normalizedData = {
+      ...data,
+      location: this.normalizeLocation(data.location)
+    };
+
     // Store GPS data in MongoDB with offline sync flag
     const gpsEntry = {
       peerId,
-      data,
+      data: normalizedData,
       timestamp: Date.now(),
       synced: false
     };
 
     // Store in MongoDB
-    const { supabase } = await import('../../config/db.js');
     await supabase.from('gps_offline_data').insert([gpsEntry]);
 
     // Store locally in Redis for quick access
     await this.redis.setex(
       `gps:${peerId}:latest`,
       300,
-      JSON.stringify(data)
+      JSON.stringify(normalizedData)
     );
 
     // Relayed to peers in mesh
-    await this.relayLocation(peerId, data.location);
+    await this.relayLocation(peerId, normalizedData.location);
   }
 
   async handleDisconnect(peerId) {
@@ -274,7 +338,6 @@ class WebRTCSignalingServer {
   }
 
   async getOfflineGPSData(peerId, since) {
-    const { supabase } = await import('../../config/db.js');
     const { data } = await supabase
       .from('gps_offline_data')
       .select('*')
@@ -287,7 +350,6 @@ class WebRTCSignalingServer {
 
   async syncOfflineData(peerId) {
     // Mark data as synced for this peer
-    const { supabase } = await import('../../config/db.js');
     await supabase
       .from('gps_offline_data')
       .update({ synced: true })

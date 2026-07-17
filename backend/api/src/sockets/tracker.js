@@ -78,12 +78,36 @@ const trackingSubscriptions = new Map();
 // channel per location ping. Reused across pings and cleaned up on disconnect.
 const locationChannels = new Map();
 
+// Reverse index from orderDisplayId to the set of orderUUID keys in locationChannels.
+// Used during disconnect cleanup so channels are properly removed when the last
+// subscriber for a display ID disconnects.
+const displayIdToLocationChannelKeys = new Map();
+
 // =====================================================================
 // CLOCK SKEW & CIRCUIT BREAKER CONFIGURATION (#596)
 // =====================================================================
 const CLOCK_SKEW_TOLERANCE_MS = parseInt(process.env.CLOCK_SKEW_TOLERANCE_MS, 10) || 300000; // default ±5 min
 const MAX_CONSECUTIVE_DROPS = 10;
 const consecutiveDropCount = new Map();
+
+// =====================================================================
+// DRIVER STATE TTL & LAZY CLEANUP
+// =====================================================================
+const TRACKER_DRIVER_STATE_TTL_MS = parseInt(process.env.TRACKER_DRIVER_STATE_TTL_MS, 10) || 900000; // default 15 min
+const DRIVER_STATE_SWEEP_THRESHOLD = 50;
+const DRIVER_STATE_SWEEP_INTERVAL_MS = 60000;
+let lastDriverStateSweep = 0;
+
+function sweepStaleDriverState(now) {
+  if (consecutiveDropCount.size < DRIVER_STATE_SWEEP_THRESHOLD) return;
+  if (now - lastDriverStateSweep < DRIVER_STATE_SWEEP_INTERVAL_MS) return;
+  lastDriverStateSweep = now;
+  for (const [driverId, entry] of consecutiveDropCount) {
+    if (now - entry.lastUpdated > TRACKER_DRIVER_STATE_TTL_MS) {
+      consecutiveDropCount.delete(driverId);
+    }
+  }
+}
 
 // =====================================================================
 // EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
@@ -155,6 +179,7 @@ let telemetryFlushTimeout = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
 let telemetryMonitorInterval = null;
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000; // 3 minutes
 
 // Observability counters
 let telemetryTotalFlushed = 0;
@@ -269,6 +294,11 @@ export function rejectWebSocketUpgrade(socket) {
  * Initialize WebSockets Server and bind event handlers
  */
 export function initWebSocketServer(server, orderRepository) {
+  if (wsServer) {
+    logger.warn('[initWebSocketServer] Already initialized — skipping duplicate call to prevent connection leaks.');
+    return;
+  }
+
   _orderRepository = orderRepository;
   const wss = new WebSocketServer({ noServer: true });
   wsServer = wss;
@@ -433,7 +463,7 @@ export function initWebSocketServer(server, orderRepository) {
       ws.isAlive = false;
       ws.ping();
     });
-  }, 30000);
+  }, HEARTBEAT_INTERVAL_MS);
 
   wss.on('close', () => {
     if (wsHeartbeatInterval) {
@@ -585,8 +615,10 @@ export async function handleLocationPing(ws, data, req) {
           logger.warn(`[TRUXIFY SEQUENCE CONTROL] Out-of-order telemetry dropped for Driver: ${driver_id}. Stale jitter detected.`);
 
           // Circuit breaker: if too many consecutive drops, reset the sequence
-          const currentCount = (consecutiveDropCount.get(driver_id) || 0) + 1;
-          consecutiveDropCount.set(driver_id, currentCount);
+          const prevEntry = consecutiveDropCount.get(driver_id);
+          const currentCount = (prevEntry ? prevEntry.count : 0) + 1;
+          consecutiveDropCount.set(driver_id, { count: currentCount, lastUpdated: serverNow });
+          sweepStaleDriverState(serverNow);
           if (currentCount >= MAX_CONSECUTIVE_DROPS) {
             logger.warn(
               `[TRUXIFY CIRCUIT BREAKER] Driver ${driver_id} exceeded max consecutive drops ` +
@@ -732,6 +764,12 @@ export async function handleLocationPing(ws, data, req) {
       const channel = supabase.channel(`driver-location:${orderUUID}`);
       channel.subscribe();
       locationChannels.set(orderUUID, channel);
+      if (orderDisplayId) {
+        if (!displayIdToLocationChannelKeys.has(orderDisplayId)) {
+          displayIdToLocationChannelKeys.set(orderDisplayId, new Set());
+        }
+        displayIdToLocationChannelKeys.get(orderDisplayId).add(orderUUID);
+      }
     }
     const channel = locationChannels.get(orderUUID);
     channel.send({
@@ -811,11 +849,11 @@ async function flushTelemetryBuffer() {
         } else {
           logger.error(`[TRUXIFY VALIDATION] Bulk insert validation error: ${err.message}`);
         }
-        const succeeded = err.writeErrors
-          ? recordsToFlush.filter((_, i) => !err.writeErrors.some(e => e.index === i))
+        const failed = err.writeErrors
+          ? recordsToFlush.filter((_, i) => err.writeErrors.some(e => e.index === i))
           : [];
-        if (succeeded.length > 0) {
-          const overflowDrop = telemetryWriteBuffer.prepend(succeeded);
+        if (failed.length > 0) {
+          const overflowDrop = telemetryWriteBuffer.prepend(failed);
           if (overflowDrop > 0) {
             telemetryTotalDropped += overflowDrop;
             telemetryOverflowDropped += overflowDrop;
@@ -931,7 +969,7 @@ export async function closeWebSocketServer() {
       const dataLoss = telemetryWriteBuffer.length;
       if (dataLoss > 0) {
         try {
-          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(scrubPII(r))).join('\n');
+          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(r)).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
           logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
@@ -1084,19 +1122,31 @@ async function removeClientFromAllSubscriptions(ws) {
     }
     if (clients.size === 0) {
       trackingSubscriptions.delete(key);
-      // Clean up the cached Supabase Realtime channel for this orderUUID
-      // so channels do not leak after the last subscriber disconnects.
-      if (locationChannels.has(key)) {
-        const channel = locationChannels.get(key);
-        // Guard against supabase being null (e.g. not configured in dev/test environments)
-        if (supabase) {
-          supabase.removeChannel(channel);
+      // Clean up cached Supabase Realtime channels associated with this
+      // subscription key via the reverse index so channels do not leak.
+      const channelKeys = displayIdToLocationChannelKeys.get(key);
+      if (channelKeys) {
+        for (const uuidKey of channelKeys) {
+          if (locationChannels.has(uuidKey)) {
+            const channel = locationChannels.get(uuidKey);
+            if (supabase) {
+              supabase.removeChannel(channel);
+            }
+            locationChannels.delete(uuidKey);
+            logger.info(`🔌 Removed Supabase Realtime channel for order "${uuidKey}" on last subscriber disconnect.`);
+          }
         }
-        locationChannels.delete(key);
-        logger.info(`🔌 Removed Supabase Realtime channel for order "${key}" on last subscriber disconnect.`);
+        displayIdToLocationChannelKeys.delete(key);
       }
     }
   });
+
+  // Clean up the in-memory circuit breaker state so disconnected
+  // drivers do not cause unbounded memory growth. This runs regardless
+  // of Redis availability since consecutiveDropCount is always in-memory.
+  if (ws.driverId) {
+    consecutiveDropCount.delete(ws.driverId);
+  }
 
   if (redisClient) {
     const subscriberId = ws.user?.id || ws.driverId;
@@ -1143,9 +1193,9 @@ async function restoreSubscriptions(ws) {
     for (const targetId of targets) {
       const allowed = await canSubscribe(
         ws,
-        targetId.startsWith('ORDER-')
-          ? { order_display_id: targetId }
-          : { driver_id: targetId }
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)
+          ? { driver_id: targetId }
+          : { order_display_id: targetId }
       );
 
       if (!allowed) {
@@ -1224,10 +1274,24 @@ export const __testing = {
     mongoDbOverride = val;
   },
   getConsecutiveDropCount(driverId) {
-    return consecutiveDropCount.get(driverId) || 0;
+    const entry = consecutiveDropCount.get(driverId);
+    return entry ? entry.count : 0;
   },
   clearConsecutiveDropCount() {
     consecutiveDropCount.clear();
+  },
+  getConsecutiveDropCountSize() {
+    return consecutiveDropCount.size;
+  },
+  getConsecutiveDropCountEntry(driverId) {
+    return consecutiveDropCount.get(driverId) || null;
+  },
+  getDriverStateTtlMs() {
+    return TRACKER_DRIVER_STATE_TTL_MS;
+  },
+  sweepStaleDriverState,
+  setLastDriverStateSweep(val) {
+    lastDriverStateSweep = val;
   },
   get MAX_CONSECUTIVE_DROPS() {
     return MAX_CONSECUTIVE_DROPS;
