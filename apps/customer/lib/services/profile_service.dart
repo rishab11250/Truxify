@@ -37,7 +37,7 @@ class ProfileService {
         await prefs.setString(_profileCacheKey, jsonEncode(result));
         return result;
       }
-      return <String, dynamic>{};
+      throw StateError('Expected profile object but received ${result.runtimeType}');
     } on ApiException catch (e) {
       final cached = await _readCachedProfile(prefs);
       if (cached != null) {
