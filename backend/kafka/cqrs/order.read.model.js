@@ -122,10 +122,12 @@ class OrderReadModel {
       query = query.order('updated_at', { ascending: false });
       
       if (filters.limit) {
-        query = query.limit(filters.limit);
+        const safeLimit = Math.min(Math.max(1, Math.floor(Number(filters.limit))), 1000);
+        query = query.limit(safeLimit);
       }
       if (filters.offset) {
-        query = query.offset(filters.offset);
+        const safeOffset = Math.max(0, Math.floor(Number(filters.offset)));
+        query = query.offset(safeOffset);
       }
       
       const { data, error } = await query;
@@ -138,22 +140,20 @@ class OrderReadModel {
   }
 
   async getOrderStats() {
-    try {
-      const { data, error } = await supabase
+    const statuses = ['pending', 'accepted', 'in_transit', 'delivered', 'cancelled', 'payment_released'];
+    const stats = {};
+
+    for (const status of statuses) {
+      const { count, error } = await supabase
         .from('order_read_models')
-        .select('status, count')
-        .groupBy('status');
+        .select('*', { count: 'exact', head: true })
+        .eq('status', status);
 
       if (error) throw error;
-      
-      return data.reduce((acc, curr) => {
-        acc[curr.status] = curr.count;
-        return acc;
-      }, {});
-    } catch (error) {
-      logger.error('Failed to get order stats:', error);
-      return {};
+      stats[status] = count ?? 0;
     }
+
+    return stats;
   }
 
   async clearCache() {
