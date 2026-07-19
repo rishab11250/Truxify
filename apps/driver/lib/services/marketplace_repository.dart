@@ -5,8 +5,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/app_models.dart';
+import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
 import 'api_client.dart';
+import 'driver_insights_service.dart';
 
 class MarketplaceRepository {
   MarketplaceRepository({
@@ -85,6 +87,17 @@ class MarketplaceRepository {
     }
   }
 
+  Future<Map<String, dynamic>> fetchDemandHeatmap() async {
+    final path = '/api/demand-heatmap';
+    try {
+      final decoded = await _apiClient.get(path);
+      return decoded as Map<String, dynamic>;
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
+  }
+
   Future<DriverBid> submitBid({
     required String loadId,
     required num amount,
@@ -113,6 +126,44 @@ class MarketplaceRepository {
           ? decoded['bids'] as List? ?? const []
           : decoded as List;
       return body.cast<Map<String, dynamic>>().map(DriverBid.fromJson).toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
+  }
+
+  Future<List<DeadheadRecommendation>> fetchDeadheadRecommendations({
+    required double destLat,
+    required double destLng,
+    required double maxWeightKg,
+    required double maxLengthM,
+    required double maxWidthM,
+    required double maxHeightM,
+    required String arrivalTime,
+    required List<Map<String, dynamic>> availableLoads,
+  }) async {
+    final path = '/api/driver/match/deadhead';
+    try {
+      final decoded = await _apiClient.post(
+        path,
+        body: <String, dynamic>{
+          'driver_destination': {'lat': destLat, 'lng': destLng},
+          'truck_specs': {
+            'max_weight_kg': maxWeightKg,
+            'max_length_m': maxLengthM,
+            'max_width_m': maxWidthM,
+            'max_height_m': maxHeightM,
+          },
+          'arrival_time': arrivalTime,
+          'available_loads': availableLoads,
+        },
+      ) as Map<String, dynamic>;
+
+      final recs = decoded['recommendations'] as List? ?? const [];
+      return recs
+          .cast<Map<String, dynamic>>()
+          .map(DeadheadRecommendation.fromJson)
+          .toList(growable: false);
     } catch (e) {
       if (e is ApiException) throw StateError(e.message);
       rethrow;
@@ -302,6 +353,45 @@ class MarketplaceRepository {
     };
 
     return controller.stream;
+  }
+
+  Future<ProfitPrediction> predictLoadProfit({
+    required LoadOffer load,
+    required double truckMileageKmL,
+    required double fuelPricePerLitre,
+    required double tripDurationHours,
+  }) async {
+    final routeDistanceKm = _parseDistanceKm(load.routeDistance);
+    final tollEstimateInr = _parseCurrencyInr(load.tollCost);
+    final cargoWeightKg = load.weightKg ?? 0;
+
+    if (routeDistanceKm <= 0 || cargoWeightKg <= 0 || truckMileageKmL <= 0) {
+      throw StateError('Insufficient data for profit prediction');
+    }
+
+    final service = DriverInsightsService(apiBaseUrl: _apiBaseUrl);
+    try {
+      return await service.predictProfit(
+        routeDistanceKm: routeDistanceKm,
+        fuelPricePerLitre: fuelPricePerLitre,
+        tollEstimateInr: tollEstimateInr,
+        truckMileageKmL: truckMileageKmL,
+        cargoWeightKg: cargoWeightKg,
+        tripDurationHours: tripDurationHours,
+      );
+    } finally {
+      service.dispose();
+    }
+  }
+
+  double _parseDistanceKm(String distance) {
+    final cleaned = distance.replaceAll(RegExp(r'[^0-9.]'), '');
+    return double.tryParse(cleaned) ?? 0;
+  }
+
+  double _parseCurrencyInr(String value) {
+    final cleaned = value.replaceAll(RegExp(r'[^0-9]'), '');
+    return double.tryParse(cleaned) ?? 0;
   }
 
   String _formatCurrency(num value) {

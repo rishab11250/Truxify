@@ -337,7 +337,12 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
 
     if (category !== undefined) {
       const normalized = category.toLowerCase().trim();
-      const dbCategory = CATEGORY_MAP[normalized] || 'general';
+      const dbCategory = CATEGORY_MAP[normalized];
+      if (!dbCategory) {
+        return res.status(400).json({
+          error: `Invalid category. Must be one of: ${Object.keys(CATEGORY_MAP).join(', ')}`,
+        });
+      }
       updates.category = dbCategory;
     }
 

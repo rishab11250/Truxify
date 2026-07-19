@@ -14,6 +14,7 @@ export 'src/services/foreground_notification_handler.dart';
 // ── Models ──────────────────────────────────────────────────────────
 export 'src/models/faq.dart';
 export 'src/models/notification_item.dart';
+export 'src/models/notification_payload.dart';
 export 'src/models/support_ticket.dart';
 
 // ── Repositories ────────────────────────────────────────────────────

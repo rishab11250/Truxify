@@ -208,17 +208,21 @@ class ZKPService {
   }
 
   async getVerificationStats() {
-    const { data, error } = await supabase
-      .from('users')
-      .select('kyc_verified, count')
-      .groupBy('kyc_verified');
-    
-    if (error) throw error;
-    
+    const [verifiedResult, unverifiedResult] = await Promise.all([
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('kyc_verified', true),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('kyc_verified', false),
+    ]);
+
+    if (verifiedResult.error) throw verifiedResult.error;
+    if (unverifiedResult.error) throw unverifiedResult.error;
+
+    const totalVerified = verifiedResult.count || 0;
+    const totalUnverified = unverifiedResult.count || 0;
+
     return {
-      totalVerified: data.find(d => d.kyc_verified === true)?.count || 0,
-      totalUnverified: data.find(d => d.kyc_verified === false)?.count || 0,
-      total: data.reduce((sum, d) => sum + d.count, 0)
+      totalVerified,
+      totalUnverified,
+      total: totalVerified + totalUnverified,
     };
   }
 }

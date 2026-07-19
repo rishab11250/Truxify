@@ -22,6 +22,7 @@ import driverRoutes from './routes/driverRoutes.js'
 import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
+import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
@@ -91,6 +92,10 @@ import {
   startReputationReconciliation,
   stopReputationReconciliation,
 } from './services/reputationReconciliation.js'
+import {
+  startDocumentExpiryWorker,
+  stopDocumentExpiryWorker,
+} from './services/documentExpiryService.js'
 import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
@@ -335,6 +340,7 @@ app.use('/api', requestCacheMiddleware)
 // REST API ROUTING
 // ============================================================================
 app.use('/api/orders', orderRoutes)
+app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
 app.use('/api/loads', loadRoutes)
@@ -552,6 +558,7 @@ server.listen(PORT, () => {
   startEscrowRefundReconciliation(orderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
+  startDocumentExpiryWorker()
 })
 
 // ============================================================================
@@ -578,6 +585,7 @@ async function shutdown (signal) {
   stopEscrowRefundReconciliation()
   stopReputationReconciliation()
   stopDlqWorker()
+  stopDocumentExpiryWorker()
   fraudDetection.destroy()
 
   const forceExit = setTimeout(() => {

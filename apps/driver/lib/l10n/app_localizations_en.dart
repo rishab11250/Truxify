@@ -434,6 +434,46 @@ class AppLocalizationsEn extends AppLocalizations {
   String get thisLoadIsMissingId => 'This load is missing an ID';
 
   @override
+  String get recommendedReturnLoads => 'Recommended Return Loads';
+
+  @override
+  String get recommendedForYou => 'Recommended For You';
+
+  @override
+  String get matchScore => 'Match Score';
+
+  @override
+  String get bestMatch => 'Best Match';
+
+  @override
+  String get noRecommendations => 'No return load recommendations available';
+
+  @override
+  String get couldNotLoadRecommendations => 'Could not load recommendations';
+
+  @override
+  String get noActiveTripForRecommendations => 'Complete a trip to see return load suggestions';
+
+  @override
+  String get detourDistance => 'Detour';
+
+  @override
+  String get bidOnLoad => 'Bid';
+
+  @override
+  String get updateBid => 'Update Bid';
+
+  @override
+  String get placeYourBid => 'Place Your Bid';
+
+  @override
+  String get bidAmount => 'Bid Amount';
+
+  @override
+  String get submitBid => 'Submit Bid';
+
+  @override
+  String get enterValidBid => 'Enter a valid bid amount';
   String get unableToOpen => 'Unable to open notification';
   String get withdraw => 'Withdraw';
 

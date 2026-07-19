@@ -60,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<List<ll.LatLng>>? _routeFuture;
   DestinationPickResult? _destination;
   bool _isSearchExpanded = false;
+  Map<String, dynamic>? _heatmapData;
 
   List<Marker>? _cachedMarkers;
   ll.LatLng? _lastDest;
@@ -185,6 +186,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _initLocation();
     _subscribeToNewLoads();
     _loadDashboardMetrics();
+    _loadHeatmapData();
+  }
+
+  Future<void> _loadHeatmapData() async {
+    try {
+      final heatmapData = await _marketplaceRepo.fetchDemandHeatmap();
+      if (mounted) {
+        setState(() {
+          _heatmapData = heatmapData;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load heatmap data: $e');
+    }
   }
 
   @override
@@ -1178,6 +1193,7 @@ class _HomeScreenState extends State<HomeScreen> {
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'com.truxify.driver',
           ),
+          if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
         ],
       );
     }
@@ -1185,12 +1201,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<List<ll.LatLng>>(
       future: _routeFuture ??
           Future.value(<ll.LatLng>[_currentLocation!, _destination!.point]),
-      builder: (context, snap) {
-        final routePoints = (snap.connectionState == ConnectionState.done &&
-                snap.hasData &&
-                snap.data!.length >= 2)
-            ? snap.data!
-            : <ll.LatLng>[_currentLocation!, _destination!.point];
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final routePoints = snapshot.data ?? [];
+        if (routePoints.isEmpty) {
+          return const Center(child: Text('Failed to load route'));
+        }
 
         final center = _routeCenter(routePoints);
         final zoom = _routeZoom(routePoints);
@@ -1211,6 +1230,7 @@ class _HomeScreenState extends State<HomeScreen> {
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.truxify.driver',
             ),
+            if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
             PolylineLayer(
               polylines: [
                 Polyline(
@@ -1586,6 +1606,36 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  Widget? _buildHeatmapLayer() {
+    if (_heatmapData == null) return null;
+    final features = _heatmapData!['features'] as List?;
+    if (features == null || features.isEmpty) return null;
+
+    final circles = <CircleMarker>[];
+    for (final feature in features) {
+      try {
+        final geom = feature['geometry'];
+        final coords = geom['coordinates'] as List;
+        final props = feature['properties'] ?? {};
+        final intensity = (props['intensity'] as num?)?.toDouble() ?? 0.5;
+
+        circles.add(CircleMarker(
+          point: ll.LatLng(coords[1], coords[0]),
+          color: Colors.red.withValues(alpha: (intensity * 0.5).clamp(0.1, 0.5)),
+          borderStrokeWidth: 0,
+          useRadiusInMeter: true,
+          radius: 2000,
+        ));
+      } catch (e) {
+        // Ignore invalid features
+      }
+    }
+
+    if (circles.isEmpty) return null;
+
+    return CircleLayer(circles: circles);
   }
 
   Future<void> _openGoogleMapsRoute() async {

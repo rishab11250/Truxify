@@ -6,6 +6,7 @@ import '../repositories/notification_repository.dart';
 import '../services/notification_router.dart';
 
 class NotificationsScreen extends StatefulWidget {
+  const NotificationsScreen({super.key, required this.userId, required this.repository, this.title = 'Notifications', this.onNotificationTap});
   const NotificationsScreen({
     super.key,
     required this.userId,
@@ -17,6 +18,7 @@ class NotificationsScreen extends StatefulWidget {
   final String userId;
   final String title;
   final NotificationRepository repository;
+  final void Function(NotificationItem item)? onNotificationTap;
 
   /// Called when a notification [ListTile] is tapped.
   /// Receives the tapped item and should perform navigation.
@@ -223,6 +225,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                               ].join('\n'),
                             ),
                             isThreeLine: true,
+                            onTap: () {
+                              if (!item.isRead) _markRead(item);
+                              widget.onNotificationTap?.call(item);
+                            },
                             trailing: item.isRead
                                 ? const Icon(Icons.done_rounded)
                                 : TextButton(

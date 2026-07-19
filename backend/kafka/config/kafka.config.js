@@ -225,20 +225,27 @@ class KafkaConfig {
   async resetConsumerOffsets(groupId, topic) {
     const admin = kafka.admin();
     await admin.connect();
-    
-    const offsets = await admin.listConsumerGroupOffsets(groupId);
-    const partitions = Object.keys(offsets[topic] || {});
-    
-    for (const partition of partitions) {
-      await admin.setConsumerGroupOffset(
-        groupId,
-        { topic, partition: parseInt(partition) },
-        'latest'
-      );
+    try {
+      const offsets = await admin.listConsumerGroupOffsets(groupId);
+      const partitions = Object.keys(offsets[topic] || {});
+      
+      for (const partition of partitions) {
+        const parsed = parseInt(partition, 10);
+        if (Number.isNaN(parsed) || parsed < 0) {
+          logger.warn(`Skipping invalid partition key: ${partition}`);
+          continue;
+        }
+        await admin.setConsumerGroupOffset(
+          groupId,
+          { topic, partition: parsed },
+          'latest'
+        );
+      }
+      
+      logger.info(`✅ Consumer offsets reset for ${groupId}`);
+    } finally {
+      await admin.disconnect();
     }
-    
-    await admin.disconnect();
-    logger.info(`✅ Consumer offsets reset for ${groupId}`);
   }
 }
 

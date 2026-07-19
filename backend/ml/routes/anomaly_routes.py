@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
@@ -54,7 +55,7 @@ async def detect_driver_anomaly(data: DriverData):
         return {
             'success': True,
             'data': result,
-            'timestamp': data.timestamp() if hasattr(data, 'timestamp') else None
+            'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Driver anomaly detection failed: {e}")
@@ -68,7 +69,7 @@ async def detect_transaction_anomaly(data: TransactionData):
         return {
             'success': True,
             'data': result,
-            'timestamp': data.timestamp() if hasattr(data, 'timestamp') else None
+            'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Transaction anomaly detection failed: {e}")
@@ -82,7 +83,7 @@ async def detect_gps_anomaly(data: GPSData):
         return {
             'success': True,
             'data': result,
-            'timestamp': data.timestamp() if hasattr(data, 'timestamp') else None
+            'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"GPS anomaly detection failed: {e}")

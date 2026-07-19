@@ -440,8 +440,8 @@ router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSch
     if (err instanceof DomainError) {
       return res.status(err.status).json(err.payload);
     }
-    logger.error("[orderRoutes] Failed to fetch order timeline:", err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
+    logger.error("[orderRoutes] Failed to fetch timeline:", err.message);
+    return res.status(500).json({ error: 'Failed to fetch timeline.' });
   }
 });
 
@@ -815,13 +815,14 @@ router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cance
           updated_at: attemptAt,
         },
         [
-          { op: 'not', column: 'status', operator: 'in', value: '("delivered","payment_released")' },
+          { op: 'not', column: 'status', operator: 'in', value: '("delivered","payment_released","cancelled")' },
+          { op: 'eq', column: 'escrow_status', value: order.escrow_status },
         ]
       );
 
       if (pendingErr) {
         if (pendingErr.code === 'PGRST116') {
-          return res.status(409).json({ error: 'Order was already delivered or payment released. Cannot cancel.' });
+          return res.status(409).json({ error: 'Order was already delivered, payment released, or cancelled. Cannot cancel.' });
         }
         return res.status(500).json({
           error: 'Failed to place the order into refund reconciliation.',
