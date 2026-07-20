@@ -81,7 +81,7 @@ class DeferredRedisStore {
  * into one rate-limit bucket.
  */
 export function safeIpKeyGenerator(req) {
-  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
   if (typeof ip === 'string') {
     if (ip.includes(',')) ip = ip.split(',')[0].trim();
     ip = ip.replace(/^::ffff:/, '');
