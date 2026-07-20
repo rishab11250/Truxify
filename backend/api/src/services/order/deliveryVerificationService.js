@@ -11,6 +11,9 @@ import {
 } from '../notificationService.js';
 import { escrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
+import { OrderTimelineService } from './orderTimelineService.js';
+
+const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
 const OTP_TTL_MINUTES = parseInt(process.env.OTP_TTL_MINUTES || '15', 10);
 const OTP_MAX_FAILED_ATTEMPTS = parseInt(process.env.OTP_MAX_FAILED_ATTEMPTS || '5', 10);
@@ -221,14 +224,26 @@ export class DeliveryVerificationService {
     );
 
     if (guardResult.error) {
-      throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
+      if (guardResult.error.code === 'PGRST116') {
+        throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
+      }
+      throw new DomainError(500, { error: 'Failed to verify OTP.', details: guardResult.error.message });
     }
-  if (guardErr) {
-    if (guardErr.code === 'PGRST116') {
-      throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
+
+    // Calculate drop-off detention
+    const timeline = await orderTimelineService.getOrderTimeline(order.order_display_id);
+    const arriving = timeline.find(t => t.milestone === 'Arriving' && t.completed);
+    if (arriving && arriving.milestone_time) {
+      const arrivedTime = new Date(arriving.milestone_time).getTime();
+      const diffMins = (Date.now() - arrivedTime) / 60000;
+      if (diffMins > 120) {
+        const excess = diffMins - 120;
+        await this.orderRepository.updateOrder(orderId, {
+          detention_minutes: (order.detention_minutes || 0) + Math.floor(excess),
+          detention_fee: (order.detention_fee || 0) + Math.floor((excess * 5000) / 60)
+        });
+      }
     }
-    throw new DomainError(500, { error: 'Failed to verify OTP.', details: guardErr.message });
-  }
 
     let releaseTxHash = null;
     let escrowAlreadyReleased = false;

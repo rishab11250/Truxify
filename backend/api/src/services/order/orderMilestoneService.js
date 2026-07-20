@@ -153,6 +153,19 @@ export class OrderMilestoneService {
       }
     }
 
+    if (milestone === 'Goods Loaded') {
+      const arrivedPickup = timeline.find(t => t.milestone === 'Arrived at Pickup' && t.completed);
+      if (arrivedPickup && arrivedPickup.milestone_time) {
+        const arrivedTime = new Date(arrivedPickup.milestone_time).getTime();
+        const diffMins = (Date.now() - arrivedTime) / 60000;
+        if (diffMins > 120) {
+          const excess = diffMins - 120;
+          updates.detention_minutes = (order.detention_minutes || 0) + Math.floor(excess);
+          updates.detention_fee = (order.detention_fee || 0) + Math.floor((excess * 5000) / 60);
+        }
+      }
+    }
+
     const { error: timelineErr } = await this.orderRepository.updateTimelineMilestone(order.order_display_id, milestone, { completed: true, milestone_time: new Date().toISOString() });
     if (timelineErr) throw new DomainError(500, { error: 'Failed to update order timeline.', details: timelineErr.message });
     await orderTimelineService.completeMilestone(order.order_display_id, milestone);
