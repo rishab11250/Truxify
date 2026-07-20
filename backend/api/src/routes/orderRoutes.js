@@ -995,6 +995,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         if (!updateErr) {
           return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
         }
+        return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
       }
       return res.status(422).json({ error: result.error });
     }
