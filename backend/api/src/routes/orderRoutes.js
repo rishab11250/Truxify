@@ -129,6 +129,7 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
     return res.status(400).json({ error: 'Missing required routing or cargo specification fields.' });
   }
 
+  let pricing;
   try {
     const routeEstimate = await getRouteEstimate({
       pickupLat: Number(pickup_lat),
@@ -136,7 +137,6 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
       dropLat: Number(drop_lat),
       dropLng: Number(drop_lng),
     });
-    let pricing;
     pricing = computeOrderPricing({
       pickupLat:  Number(pickup_lat),
       pickupLng:  Number(pickup_lng),
