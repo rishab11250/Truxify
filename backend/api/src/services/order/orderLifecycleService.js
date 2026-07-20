@@ -512,7 +512,10 @@ export class OrderLifecycleService {
     });
 
     if (offerUpdateErr) {
-      logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
+      throw new DomainError(500, {
+        error: 'Failed to update load offer after drop change.',
+        details: offerUpdateErr.message,
+      });
     }
 
     try {
