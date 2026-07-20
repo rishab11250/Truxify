@@ -222,6 +222,17 @@ class KafkaConfig {
     return offsets;
   }
 
+  parsePartitionId(partition) {
+    if (!/^\d+$/.test(String(partition))) {
+      throw new Error(`Invalid Kafka partition id: ${partition}`);
+    }
+    const parsed = Number(partition);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`Invalid Kafka partition id: ${partition}`);
+    }
+    return parsed;
+  }
+
   async resetConsumerOffsets(groupId, topic) {
     const admin = kafka.admin();
     await admin.connect();
