@@ -125,7 +125,7 @@ class FHEModel:
         # sigmoid(x) ≈ 0.5 + 0.197 * x - 0.004 * x^3
         x_sq = x * x
         x_cu = x_sq * x
-        result = ts.ckks_vector(self.context, [0.5]) + 0.197 * x - 0.004 * x_cu
+        result = 0.5 + 0.197 * x - 0.004 * x_cu
         return result
     
     def _encrypted_softmax(self, x: ts.ckks_vector) -> ts.ckks_vector:
