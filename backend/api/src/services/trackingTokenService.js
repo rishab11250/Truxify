@@ -125,7 +125,11 @@ export class TrackingTokenService {
       .order('created_at', { ascending: false });
 
     if (error) {
-      return [];
+      this._logger.error(
+        { error, orderDisplayId },
+        'Failed to fetch public tracking timeline'
+      );
+      throw new Error('Failed to fetch public tracking timeline');
     }
 
     return data || [];
