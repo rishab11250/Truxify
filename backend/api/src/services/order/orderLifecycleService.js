@@ -447,95 +447,110 @@ export class OrderLifecycleService {
     return measureExecution('OrderLifecycleService.changeDrop', async () => {
     const { drop_address, drop_lat, drop_lng } = body;
 
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderByAnyId(orderId, '*');
+    const { data: initialOrder, error: orderErr } = await this.orderRepository.findOrderByAnyId(orderId, 'id');
     if (orderErr) throw new DomainError(500, { error: 'Failed to fetch order.', details: orderErr.message });
-    if (!order) throw new DomainError(404, { error: 'Order not found.' });
-    if (order.customer_id !== customerId) throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
-    if (order.escrow_status === 'funded' || order.status !== 'pending') {
-      const reason = order.escrow_status === 'funded'
-        ? 'after escrow has been funded'
-        : `after order status is '${order.status}'`;
-      throw new DomainError(409, {
-        error: `Drop location cannot be changed ${reason}.`,
-        recovery: 'Cancel this order to receive a refund, then rebook with the correct destination.',
-      });
-    }
-    if (order.weight_tonnes == null) throw new DomainError(500, { error: 'Data inconsistency: Order is missing weight_tonnes.' });
+    if (!initialOrder) throw new DomainError(404, { error: 'Order not found.' });
 
-    let pricing;
-    try {
-      const routeEstimate = await getRouteEstimate({
-        pickupLat: Number(order.pickup_lat),
-        pickupLng: Number(order.pickup_lng),
-        dropLat: Number(drop_lat),
-        dropLng: Number(drop_lng),
-      });
-
-      pricing = computeOrderPricing({
-        pickupLat: Number(order.pickup_lat),
-        pickupLng: Number(order.pickup_lng),
-        dropLat: Number(drop_lat),
-        dropLng: Number(drop_lng),
-        weightTonnes: Number(order.weight_tonnes),
-        roadDistanceKm: routeEstimate?.distanceKm,
-        isFragile: Boolean(order.is_fragile),
-        isStackable: Boolean(order.is_stackable),
-      });
-    } catch (pricingErr) {
-      throw new DomainError(400, { error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
-    }
-
-    const updates = {
-      drop_address,
-      drop_lat: Number(drop_lat),
-      drop_lng: Number(drop_lng),
-      base_freight: pricing.baseFreight,
-      toll_estimate: pricing.tollEstimate,
-      platform_fee: pricing.platformFee,
-      total_amount: pricing.totalAmount,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrder(order.id, updates);
-    if (updateErr) throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
-
-    const { error: offerUpdateErr } = await this.orderRepository.updateLoadOffer(order.order_display_id, {
-      drop_address,
-      drop_lat: Number(drop_lat),
-      drop_lng: Number(drop_lng),
-      route_label: `${(order.pickup_address || '').split(',')[0]} \u2192 ${drop_address.split(',')[0]}`,
-      freight_value: pricing.totalAmount,
-      fuel_cost: pricing.fuelCost,
-      toll_cost: pricing.tollEstimate,
-      net_profit: pricing.netProfit,
-      extra_distance_km: pricing.distanceKm,
-    });
-
-    if (offerUpdateErr) {
-      throw new DomainError(500, {
-        error: 'Failed to update load offer after drop change.',
-        details: offerUpdateErr.message,
-      });
+    const lockKey = `escrow_lock:${initialOrder.id}`;
+    const lockValue = await acquireLock(lockKey, 30000);
+    if (!lockValue) {
+      throw new DomainError(409, { error: 'Order is currently being processed. Please try again later.' });
     }
 
     try {
-      await this.orderTimelineService.insertEntry(order.order_display_id, 'Drop Changed', 25);
-    } catch (timelineErr) {
-      logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
+      const { data: order, error: refetchErr } = await this.orderRepository.findOrderById(initialOrder.id, '*');
+      if (refetchErr) throw new DomainError(500, { error: 'Failed to fetch order.', details: refetchErr.message });
+      if (!order) throw new DomainError(404, { error: 'Order not found.' });
+
+      if (order.customer_id !== customerId) throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
+      if (order.escrow_status === 'funded' || order.status !== 'pending') {
+        const reason = order.escrow_status === 'funded'
+          ? 'after escrow has been funded'
+          : `after order status is '${order.status}'`;
+        throw new DomainError(409, {
+          error: `Drop location cannot be changed ${reason}.`,
+          recovery: 'Cancel this order to receive a refund, then rebook with the correct destination.',
+        });
+      }
+      if (order.weight_tonnes == null) throw new DomainError(500, { error: 'Data inconsistency: Order is missing weight_tonnes.' });
+
+      let pricing;
+      try {
+        const routeEstimate = await getRouteEstimate({
+          pickupLat: Number(order.pickup_lat),
+          pickupLng: Number(order.pickup_lng),
+          dropLat: Number(drop_lat),
+          dropLng: Number(drop_lng),
+        });
+
+        pricing = computeOrderPricing({
+          pickupLat: Number(order.pickup_lat),
+          pickupLng: Number(order.pickup_lng),
+          dropLat: Number(drop_lat),
+          dropLng: Number(drop_lng),
+          weightTonnes: Number(order.weight_tonnes),
+          roadDistanceKm: routeEstimate?.distanceKm,
+          isFragile: Boolean(order.is_fragile),
+          isStackable: Boolean(order.is_stackable),
+        });
+      } catch (pricingErr) {
+        throw new DomainError(400, { error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
+      }
+
+      const updates = {
+        drop_address,
+        drop_lat: Number(drop_lat),
+        drop_lng: Number(drop_lng),
+        base_freight: pricing.baseFreight,
+        toll_estimate: pricing.tollEstimate,
+        platform_fee: pricing.platformFee,
+        total_amount: pricing.totalAmount,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrder(order.id, updates);
+      if (updateErr) throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
+
+      const { error: offerUpdateErr } = await this.orderRepository.updateLoadOffer(order.order_display_id, {
+        drop_address,
+        drop_lat: Number(drop_lat),
+        drop_lng: Number(drop_lng),
+        route_label: `${(order.pickup_address || '').split(',')[0]} \u2192 ${drop_address.split(',')[0]}`,
+        freight_value: pricing.totalAmount,
+        fuel_cost: pricing.fuelCost,
+        toll_cost: pricing.tollEstimate,
+        net_profit: pricing.netProfit,
+        extra_distance_km: pricing.distanceKm,
+      });
+
+      if (offerUpdateErr) {
+        throw new DomainError(500, {
+          error: 'Failed to update load offer after drop change.',
+          details: offerUpdateErr.message,
+        });
+      }
+
+      try {
+        await this.orderTimelineService.insertEntry(order.order_display_id, 'Drop Changed', 25);
+      } catch (timelineErr) {
+        logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
+      }
+
+      await expireDeliveryOtps(order.id);
+
+      return {
+        message: 'Drop location updated successfully.',
+        pricing: {
+          base_freight: updatedOrder.base_freight ?? pricing.baseFreight,
+          toll_estimate: updatedOrder.toll_estimate ?? pricing.tollEstimate,
+          platform_fee: updatedOrder.platform_fee ?? pricing.platformFee,
+          total_amount: updatedOrder.total_amount ?? pricing.totalAmount,
+        },
+        order: updatedOrder,
+      };
+    } finally {
+      await releaseLock(lockKey, lockValue);
     }
-
-    await expireDeliveryOtps(order.id);
-
-    return {
-      message: 'Drop location updated successfully.',
-      pricing: {
-        base_freight: updatedOrder.base_freight ?? pricing.baseFreight,
-        toll_estimate: updatedOrder.toll_estimate ?? pricing.tollEstimate,
-        platform_fee: updatedOrder.platform_fee ?? pricing.platformFee,
-        total_amount: updatedOrder.total_amount ?? pricing.totalAmount,
-      },
-      order: updatedOrder,
-    };
     });
   }
 
@@ -728,38 +743,48 @@ export class OrderLifecycleService {
 
   async confirmDeposit(orderId, userId, txHash) {
     return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
-    const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
-      orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status'
-    );
-
-    if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
-    if (order.customer_id !== userId) {
-      throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
-    }
-    if (order.escrow_status !== 'funding') {
-      throw new DomainError(400, { error: 'Order is not in funding state' });
+    const lockKey = `escrow_lock:${orderId}`;
+    const lockValue = await acquireLock(lockKey, 30000);
+    if (!lockValue) {
+      throw new DomainError(409, { error: 'Order is currently being processed. Please try again later.' });
     }
 
-    const { data: customerProfile } = await this.orderRepository.findCustomerWallet(userId);
-    const customerWallet = customerProfile?.polygon_wallet_address ?? null;
+    try {
+      const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
+        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status'
+      );
 
-    const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
-    const result = await recordDepositTx(bookingId, txHash, customerWallet);
+      if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
+      if (order.customer_id !== userId) {
+        throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
+      }
+      if (order.escrow_status !== 'funding') {
+        throw new DomainError(400, { error: 'Order is not in funding state' });
+      }
 
-    if (result.error) throw new DomainError(422, { error: result.error });
+      const { data: customerProfile } = await this.orderRepository.findCustomerWallet(userId);
+      const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
-    const { error: updateErr } = await this.orderRepository.updateOrder(orderId, {
-      escrow_status: 'funded',
-      deposit_tx_hash: result.txHash,
-      escrow_deposited_at: new Date().toISOString(),
-    });
+      const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
+      const result = await recordDepositTx(bookingId, txHash, customerWallet);
 
-    if (updateErr) {
-      logger.error('[confirm-deposit] DB update failed:', updateErr.message);
-      throw new DomainError(500, { error: 'Database update failed after deposit confirmation. Please contact support.' });
+      if (result.error) throw new DomainError(422, { error: result.error });
+
+      const { error: updateErr } = await this.orderRepository.updateOrder(orderId, {
+        escrow_status: 'funded',
+        deposit_tx_hash: result.txHash,
+        escrow_deposited_at: new Date().toISOString(),
+      });
+
+      if (updateErr) {
+        logger.error('[confirm-deposit] DB update failed:', updateErr.message);
+        throw new DomainError(500, { error: 'Database update failed after deposit confirmation. Please contact support.' });
+      }
+
+      return { message: 'Escrow deposit confirmed', txHash: result.txHash };
+    } finally {
+      await releaseLock(lockKey, lockValue);
     }
-
-    return { message: 'Escrow deposit confirmed', txHash: result.txHash };
     });
   }
 
