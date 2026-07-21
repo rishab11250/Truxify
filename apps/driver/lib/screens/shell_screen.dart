@@ -11,6 +11,7 @@ import '../services/fcm_service.dart';
 import 'home_screen.dart';
 import 'documents_screen.dart';
 import 'destination_picker_screen.dart';
+import 'weight_calculator_screen.dart';
 import 'earnings_screen.dart';
 import 'load_detail_screen.dart';
 import 'load_point_detail_screen.dart';
@@ -261,6 +262,8 @@ class _ShellScreenState extends State<ShellScreen> {
         }
         return truxifyPageRoute(
             (context) => LoadPointDetailScreen(point: args));
+      case AppRoutes.weightCalculator:
+        return truxifyPageRoute((context) => const WeightCalculatorScreen());
       case AppRoutes.destinationPicker:
         final args = settings.arguments as DestinationPickerArgs?;
         return truxifyPageRoute(
