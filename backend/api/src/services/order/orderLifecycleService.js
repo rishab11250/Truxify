@@ -421,9 +421,19 @@ export class OrderLifecycleService {
   }
 
   async verifyDeliveryFn(orderId, driverId, otp) {
-    return measureExecution('OrderLifecycleService.verifyDeliveryFn', () =>
-      this.deliveryVerification.verifyDelivery({ orderId, driverId, otp })
-    );
+    return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
+      const lockKey = `escrow_lock:${orderId}`;
+      const lockValue = await acquireLock(lockKey, 30000);
+      if (!lockValue) {
+        throw new DomainError(409, { error: 'Delivery verification is currently being processed. Please try again later.' });
+      }
+
+      try {
+        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp });
+      } finally {
+        await releaseLock(lockKey, lockValue);
+      }
+    });
   }
 
   async resendOtpFn(orderId, driverId) {
