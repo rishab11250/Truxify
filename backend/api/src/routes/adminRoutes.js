@@ -66,8 +66,12 @@ router.get('/dashboard', authenticate, userLimiter, requirePolicy('admin:view-da
       return res.status(500).json({ error: 'Failed to fetch pending orders.' });
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Compute midnight IST (UTC+5:30) so daily stats align with Indian business day
+    const now = new Date();
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+    istNow.setUTCHours(0, 0, 0, 0);
+    const today = new Date(istNow.getTime() - IST_OFFSET_MS);
     const { data: todayOrders, error: revErr } = await supabase
       .from('orders')
       .select('total_amount')
