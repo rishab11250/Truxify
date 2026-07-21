@@ -34,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _locationLabel = 'Surat, Gujarat';
   String _customerName = '';
   List<Map<String, dynamic>> _activeOrders = [];
+  Map<String, dynamic>? _customerStats;
 
   @override
   void initState() {
@@ -63,13 +64,16 @@ class _HomeScreenState extends State<HomeScreen> {
       final results = await Future.wait([
         _profileService.fetchProfile(),
         _orderService.fetchActiveOrders(),
+        _profileService.fetchCustomerStats(),
       ]);
       if (!mounted) return;
       final profile = results[0] is Map<String, dynamic> ? results[0] as Map<String, dynamic> : <String, dynamic>{};
       final orders = results[1] is List ? List<Map<String, dynamic>>.from(results[1] as List) : <Map<String, dynamic>>[];
+      final stats = results[2] is Map<String, dynamic> ? results[2] as Map<String, dynamic> : null;
       setState(() {
         _customerName = (profile['full_name']?.toString() ?? profile['name']?.toString() ?? '').trim();
         _activeOrders = orders;
+        _customerStats = stats;
         _isLoading = false;
       });
     } catch (e) {
@@ -174,11 +178,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                 )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
+              : RefreshIndicator(
+                  onRefresh: _loadData,
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                       Text(AppLocalizations.of(context)!.greetingMessage(greeting, displayName), style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
                       const SizedBox(height: 6),
                       Text(
@@ -224,11 +231,19 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: StatCard(title: AppLocalizations.of(context)!.moreStats, value: AppLocalizations.of(context)!.moreStats, icon: Icons.inventory_2_rounded),
+                            child: StatCard(
+                              title: AppLocalizations.of(context)!.totalShipments,
+                              value: '${_customerStats?['totalOrders'] ?? 0}',
+                              icon: Icons.inventory_2_rounded,
+                            ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: StatCard(title: AppLocalizations.of(context)!.moreStats, value: AppLocalizations.of(context)!.savings, icon: Icons.savings_rounded),
+                            child: StatCard(
+                              title: AppLocalizations.of(context)!.savings,
+                              value: '${_customerStats?['totalSaved'] ?? 0}',
+                              icon: Icons.savings_rounded,
+                            ),
                           ),
                         ],
                       ),
@@ -247,6 +262,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: () => controller.openFindTrucks(draft: mockDefaultRouteDraft),
                       ),
                     ],
+                    ),
                   ),
                 ),
     );
