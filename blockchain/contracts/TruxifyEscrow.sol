@@ -91,6 +91,16 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     receive() external payable {}
     fallback() external payable {}
 
+    // ─── Modifiers ───────────────────────────────────────────────────────────
+
+    modifier onlyBookingParticipant(uint256 bookingId) {
+        require(
+            msg.sender == bookings[bookingId].customer || msg.sender == bookings[bookingId].driver,
+            "TruxifyEscrow: Not authorised"
+        );
+        _;
+    }
+
     // ─── External Functions ──────────────────────────────────────────────────
 
     /**
@@ -190,7 +200,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
      */
     function cancelBooking(uint256 bookingId)
         external
-        onlyOwner
+        onlyBookingParticipant(bookingId)
         nonReentrant
         whenNotPaused
     {
@@ -232,7 +242,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
      *
      * @param bookingId The booking to flag
      */
-    function raiseDispute(uint256 bookingId) external onlyOwner whenNotPaused {
+    function raiseDispute(uint256 bookingId) external onlyBookingParticipant(bookingId) whenNotPaused {
         Booking storage booking = bookings[bookingId];
 
         require(
