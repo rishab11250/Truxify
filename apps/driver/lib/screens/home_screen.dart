@@ -21,6 +21,7 @@ import '../services/marketplace_repository.dart';
 import '../services/route_service.dart';
 import '../services/trip_service.dart';
 import '../services/location_service.dart';
+import '../services/weigh_station_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/map_markers.dart';
@@ -642,6 +643,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await LocationService.instance.startTracking();
       } else {
         LocationService.instance.stopTracking();
+        WeighStationService.instance.resetAlertedStations();
         if (mounted) {
           setState(() {
             _activeTripId = null;
@@ -746,6 +748,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
   _clearDestination();
+  WeighStationService.instance.resetAlertedStations();
   if (mounted) {
     setState(() {
       _activeTripId = null;
