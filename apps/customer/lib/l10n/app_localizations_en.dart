@@ -455,4 +455,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get recentRoutes => 'Recent Routes';
+
+  @override
+  String get allTrips => 'All Trips';
+
+  @override
+  String get filterStatus => 'Filter by Status';
+
+  @override
+  String get noMatchingTrips => 'No trips match the selected filter';
 }
