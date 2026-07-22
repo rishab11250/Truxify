@@ -48,7 +48,7 @@ class BackgroundSyncService {
       token = Supabase.instance.client.auth.currentSession?.accessToken;
     }
 
-    if (token == null) return; // Cannot sync without auth
+    if (token == null) return;
 
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL', defaultValue: 'http://localhost:5000');
     
@@ -85,7 +85,7 @@ class BackgroundSyncService {
           await podStorageService.markAsSynced(pod.id!);
         }
       } catch (e) {
-        // Will retry next time
+        // Will retry on next background sync
       }
     }
   }
