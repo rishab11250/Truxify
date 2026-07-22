@@ -21,11 +21,13 @@ import '../services/marketplace_repository.dart';
 import '../services/route_service.dart';
 import '../services/trip_service.dart';
 import '../services/sync_service.dart';
+import '../services/battery_service.dart';
 import '../services/location_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/map_markers.dart';
 import '../widgets/home/offline_banner.dart';
+import '../widgets/home/low_battery_banner.dart';
 import '../widgets/home/active_navigation_header.dart';
 import '../widgets/home/search_destination_card.dart';
 import '../widgets/home/new_load_notification_banner.dart';
@@ -139,7 +141,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingLocation = true;
   String? _locationError;
   late final MarketplaceRepository _marketplaceRepo;
-  StreamSubscription<LoadOffer>? _loadSubscription;
+  StreamSubscription? _tripSubscription;
+
+  String _hosStatus = 'off_duty';
+  int _hosDrivingMinutes = 0;
+  int _hosOnDutyMinutes = 0;
+
   Timer? _autoHideTimer;
   LoadOffer? _latestNewLoad;
   bool _dismissedNewLoad = false;
@@ -153,10 +160,15 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _networkError;
   int _retryCount = 0;
 
+  final BatteryService _batteryService = BatteryService.instance;
+  int _batteryLevel = 100;
+  bool _isCharging = false;
+  bool _criticalDialogShown = false;
+
   String _sanitizeCoordinate(dynamic coord) {
     if (coord == null) return '0.0';
     if (coord is double) return coord.toStringAsFixed(6);
-    if (coord is int) return coord.toStringAsFixed(6);
+    if (coord is int) return coord.toDouble().toStringAsFixed(6);
     return (double.tryParse(coord.toString()) ?? 0.0).toStringAsFixed(6);
   }
 
@@ -193,6 +205,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _subscribeToNewLoads();
     _loadDashboardMetrics();
     _loadHeatmapData();
+    _initBatteryMonitoring();
   }
 
   Future<void> _loadHeatmapData() async {
@@ -208,6 +221,61 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _initBatteryMonitoring() {
+    _batteryService.addListener(_onBatteryChanged);
+    _batteryService.startMonitoring();
+  }
+
+  void _onBatteryChanged() {
+    if (!mounted) return;
+    final info = _batteryService.currentInfo;
+    setState(() {
+      _batteryLevel = info.level;
+      _isCharging = info.isCharging;
+    });
+    if (info.isCritical && !_criticalDialogShown) {
+      _criticalDialogShown = true;
+      _showCriticalBatteryDialog();
+    }
+  }
+
+  void _showCriticalBatteryDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(
+          Icons.battery_alert_rounded,
+          color: TruxifyColors.errorRed,
+          size: 48,
+        ),
+        title: const Text('Critical Battery'),
+        content: Text(
+          'Battery is at $_batteryLevel%. '
+          'Please connect your charger immediately to continue tracking.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Dismiss'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              BatteryService.instance.openBatterySettings();
+            },
+            child: const Text('Open Battery Settings'),
+          ),
+        ],
+      ),
+    ).then((_) {
+      if (mounted && _batteryService.currentInfo.isCritical) {
+        _criticalDialogShown = false;
+      }
+    });
+  }
+
   @override
   void didUpdateWidget(HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -220,6 +288,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _batteryService.removeListener(_onBatteryChanged);
     _connectivitySubscription?.cancel();
     _loadSubscription?.cancel();
     _autoHideTimer?.cancel();
@@ -301,8 +370,13 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       final historyData = results[2] as Map<String, dynamic>;
-      final historyList = (historyData['trips'] as List?)
-          ?.map((t) => TripRecord(
+      final historyRows = historyData['trips'] is List
+          ? (historyData['trips'] as List)
+              .whereType<Map>()
+              .map((t) => Map<String, dynamic>.from(t))
+          : const Iterable<Map<String, dynamic>>.empty();
+      final historyList = historyRows
+          .map((t) => TripRecord(
                 route: (t['route'] as String?) ?? (t['route_label'] as String?) ?? '',
                 date: (t['date'] as String?) ?? (t['trip_date'] as String?) ?? '',
                 earnings: (t['earnings'] as String?) ?? (t['payout'] as String?) ?? '',
@@ -312,7 +386,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 verifiedBadge: (t['verified_badge'] as String?) ?? '',
                 completed: (t['completed'] as bool?) ?? (t['is_completed'] as bool?) ?? false,
               ))
-          .toList() ?? [];
+          .toList();
 
       setState(() {
         _todayEarnings = results[0] as EarningsDailyModel?;
@@ -846,6 +920,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     if (_isOffline) const OfflineBanner(),
+                    if (!_isCharging && _batteryLevel <= 20)
+                      LowBatteryBanner(
+                        batteryLevel: _batteryLevel,
+                        isCritical: _batteryLevel <= 10,
+                      ),
                     _isTripStarted
                         ? ActiveNavigationHeader(
                             destinationAddress:
@@ -861,6 +940,62 @@ class _HomeScreenState extends State<HomeScreen> {
                             onOpenDestinationPicker: _openDestinationPicker,
                           ),
                   ],
+                ),
+              ),
+            ),
+
+            // HoS Warning Banner
+            if (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840)
+              Positioned(
+                left: 12,
+                right: 12,
+                top: 96,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'HoS Limit Exceeded! Mandatory 30-min rest break required.',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+
+            // HoS Status Banner
+            Positioned(
+              left: 12,
+              right: 12,
+              top: (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840) ? 156 : 96,
+              child: Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('HoS Status: ${_hosStatus.toUpperCase()}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          Text('Driving: ${(_hosDrivingMinutes / 60).toStringAsFixed(1)}h / 11h'),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('off_duty'),
+                            child: const Text('Off Duty', style: TextStyle(fontSize: 12)),
+                          ),
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('driving'),
+                            child: const Text('Driving', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1025,6 +1160,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             todayEarnings: _todayEarnings,
                             driverRating: _driverRating,
                             onToggleOnline: _toggleOnlineState,
+                            batteryLevel: _batteryLevel,
+                            isCharging: _isCharging,
                           )
                         : ActiveTripSheet(
                             isTripStarted: _isTripStarted,
