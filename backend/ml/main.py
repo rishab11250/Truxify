@@ -73,14 +73,44 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    from .models.base import preload_all_models
+    import sys
+    from .models.base import load_model, preload_all_models
+    from .models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
+    from .models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
+    
     logger.info("ML Engine starting, pre-loading models...")
-    loaded_models.add("demand_forecast")
-    loaded_models.add("price_prediction")
-    loaded_models.add("eta_prediction")
-    loaded_models.add("driver_profit")
-    await preload_all_models()
-    logger.info("ML Engine startup complete")
+    
+    try:
+        if load_model(DEMAND_MODEL_NAME) is None:
+            raise RuntimeError(f"Model {DEMAND_MODEL_NAME} failed to load or is missing")
+        loaded_models.add("demand_forecast")
+
+        if load_model(PRICE_MODEL_NAME) is None:
+            raise RuntimeError(f"Model {PRICE_MODEL_NAME} failed to load or is missing")
+        loaded_models.add("price_prediction")
+
+        # Disable auto-training during startup to enforce fail-fast
+        original_eta_train = eta_predictor.train
+        eta_predictor.train = lambda: (_ for _ in ()).throw(RuntimeError("eta_predictor model missing or corrupted"))
+        eta_predictor.load()
+        if eta_predictor.model is None:
+            raise RuntimeError("eta_predictor model failed to load")
+        eta_predictor.train = original_eta_train
+        loaded_models.add("eta_prediction")
+
+        original_profit_train = driver_profit_predictor.train
+        driver_profit_predictor.train = lambda: (_ for _ in ()).throw(RuntimeError("driver_profit model missing or corrupted"))
+        driver_profit_predictor.load()
+        if driver_profit_predictor.model is None:
+            raise RuntimeError("driver_profit model failed to load")
+        driver_profit_predictor.train = original_profit_train
+        loaded_models.add("driver_profit")
+        
+        await preload_all_models()
+        logger.info("ML Engine startup complete")
+    except Exception as e:
+        logger.critical(f"FATAL STARTUP ERROR: Failed to load critical ML models: {e}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
