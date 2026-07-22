@@ -74,6 +74,22 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  customer-web:
+    build:
+      context: ./apps/customer
+      dockerfile: Dockerfile.web
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+  driver-web:
+    build:
+      context: ./apps/driver
+      dockerfile: Dockerfile.web
+    ports:
+      - "8081:80"
+    depends_on:
+      - api
 volumes:
   mongo_data:
   postgres_data:
