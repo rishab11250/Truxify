@@ -174,6 +174,8 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
             payable(msg.sender).transfer(msg.value - totalCost);
         }
 
+        userAssets[msg.sender].push(assetId);
+
         emit FractionalPurchase(assetId, msg.sender, amount);
     }
 
@@ -195,6 +197,10 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
 
         // Update asset
         assets[assetId].availableTokens += amount;
+
+        if (ownership.amount == 0) {
+            _removeUserAsset(msg.sender, assetId);
+        }
 
         emit FractionalSale(assetId, msg.sender, amount);
     }
@@ -333,6 +339,17 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
 
     function getTotalTradeOrders() external view returns (uint256) {
         return _tradeOrderCounter.current();
+    }
+
+    function _removeUserAsset(address user, uint256 assetId) internal {
+        uint256[] storage assets = userAssets[user];
+        for (uint256 i = 0; i < assets.length; i++) {
+            if (assets[i] == assetId) {
+                assets[i] = assets[assets.length - 1];
+                assets.pop();
+                break;
+            }
+        }
     }
 
     function getUserAssets(address user) external view returns (uint256[] memory) {
