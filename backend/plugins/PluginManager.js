@@ -16,7 +16,8 @@ class WidgetPlugin {
         this.entryPoint = config.entryPoint || null;
         this.styles = config.styles || null;
         this.registeredAt = Date.now();
-        this.isActive = true;
+        this.isInitialized = false;
+        this.isActive = false;
         this.instance = null;
     }
     
@@ -25,6 +26,8 @@ class WidgetPlugin {
             await this.lifecycle.init(this);
         }
         this.instance = this;
+        this.isInitialized = true;
+        this.isActive = true;
         return this;
     }
     
@@ -33,6 +36,7 @@ class WidgetPlugin {
             await this.lifecycle.destroy(this);
         }
         this.isActive = false;
+        this.isInitialized = false;
         this.instance = null;
         return this;
     }
@@ -184,7 +188,7 @@ class PluginManager extends EventEmitter {
             return false;
         }
         
-        if (plugin.isActive) {
+        if (plugin.isInitialized && plugin.isActive) {
             return true;
         }
         
@@ -203,7 +207,7 @@ class PluginManager extends EventEmitter {
         const results = [];
         
         for (const [name, plugin] of this.plugins) {
-            if (!plugin.isActive) {
+            if (!plugin.isInitialized || !plugin.isActive) {
                 const success = await this.initializePlugin(name);
                 results.push({ name, success });
             }
