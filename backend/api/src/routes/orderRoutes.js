@@ -2,7 +2,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
-import { mongoDb, supabase } from '../config/db.js';
+import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
@@ -41,6 +41,8 @@ import {
 } from '../core/container.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
+import { generateOrderDisplayId } from '../services/order/orderLifecycleService.js';
+import { getEscrowBookingId } from '../services/escrow.js';
 
 const router = express.Router();
 
@@ -134,6 +136,7 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
     return res.status(400).json({ error: 'Missing required routing or cargo specification fields.' });
   }
 
+  let pricing;
   try {
     const routeEstimate = await getRouteEstimate({
       pickupLat: Number(pickup_lat),
@@ -141,7 +144,6 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
       dropLat: Number(drop_lat),
       dropLng: Number(drop_lng),
     });
-    let pricing;
     pricing = computeOrderPricing({
       pickupLat:  Number(pickup_lat),
       pickupLng:  Number(pickup_lng),
@@ -174,7 +176,7 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
   }
 
   const MAX_ID_RETRIES = 3;
-  let order = null;
+  let createdOrder = null;
   let orderErr = null;
   let orderDisplayId = null;
 
@@ -202,7 +204,7 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
         .select('id, order_display_id, status, created_at')
         .single();
 
-      order = result.data;
+      createdOrder = result.data;
       orderErr = result.error;
 
       if (!orderErr || orderErr.code !== '23505') break;
@@ -229,14 +231,14 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
 
     if (timelineErr) {
       logger.error('Timeline Insertion Error:', timelineErr.message);
-      await orderRepository.deleteOrder(order.id);
+      await orderRepository.deleteOrder(createdOrder.id);
       return res.status(500).json({ error: 'Failed to create order timeline.', details: timelineErr.message });
     }
 
     try {
       await orderTimelineService.createOrderTimeline(orderDisplayId);
     } catch (timelineErr) {
-      await orderRepository.deleteOrder(order.id);
+      await orderRepository.deleteOrder(createdOrder.id);
       if (timelineErr instanceof DomainError) {
         return res.status(timelineErr.status).json(timelineErr.payload);
       }
@@ -264,7 +266,7 @@ router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requi
     if (offerErr) {
       logger.error('Load Offer Insertion Error:', offerErr.message);
       await orderRepository.deleteTimeline(orderDisplayId);
-      await orderRepository.deleteOrder(order.id);
+      await orderRepository.deleteOrder(createdOrder.id);
       return res.status(500).json({ error: 'Failed to create load offer.', details: offerErr.message });
     }
 
@@ -972,8 +974,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   const { txHash } = req.body;
 
   const lockKey = `deposit_lock:${orderId}`;
-  let lockValue = null;
-  lockValue = await acquireLock(lockKey, 10000);
+  const lockValue = await acquireLock(lockKey, 10000);
   if (!lockValue) {
     return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
   }

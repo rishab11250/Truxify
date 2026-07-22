@@ -26,6 +26,8 @@ function generateOrderDisplayId() {
   return `${prefix}${dateStr}${random}`;
 }
 
+export { generateOrderDisplayId };
+
 export class OrderLifecycleService {
   constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService }) {
     this.orderRepository = orderRepository;
