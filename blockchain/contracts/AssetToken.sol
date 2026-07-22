@@ -259,6 +259,12 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         // Transfer payment
         payable(order.seller).transfer(totalCost);
 
+        // Refund excess payment
+        if (msg.value > totalCost) {
+            (bool refunded, ) = payable(msg.sender).call{value: msg.value - totalCost}("");
+            require(refunded, "Excess refund failed");
+        }
+
         emit TradeOrderExecuted(order.orderId, assetId, msg.sender);
         emit AssetTraded(assetId, order.seller, msg.sender, order.amount);
     }
