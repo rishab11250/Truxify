@@ -1,5 +1,6 @@
 import logger from '../middleware/logger.js';
 import CircuitBreaker from 'opossum';
+import { redisClient } from '../config/db.js';
 
 // Single source of truth for ML engine base URL
 const DEFAULT_ML_ENGINE_URL = 'http://localhost:8001';
@@ -105,6 +106,21 @@ export async function predictPrice({
   guardMlApiKey();
     const url = `${getBaseUrl()}/predict/price`;
 
+    const cacheKey = routeOrigin && routeDestination 
+      ? `price_forecast:${routeOrigin}:${routeDestination}`
+      : null;
+
+    if (cacheKey && redisClient) {
+        try {
+            const cached = await redisClient.get(cacheKey);
+            if (cached) {
+                return JSON.parse(cached);
+            }
+        } catch (err) {
+            logger.error({ err, cacheKey }, 'Redis cache get error for price forecast');
+        }
+    }
+
     const payload = {
         distance_km: distanceKm,
         cargo_weight_kg: cargoWeightKg,
@@ -120,7 +136,18 @@ export async function predictPrice({
         signal: AbortSignal.timeout(5000),
     });
 
-  return handleResponse(response);
+  const result = await handleResponse(response);
+
+    if (cacheKey && redisClient && result && typeof result.estimated_price === 'number') {
+        try {
+            // Cache for 20 minutes (1200 seconds)
+            await redisClient.set(cacheKey, JSON.stringify(result), 'EX', 1200);
+        } catch (err) {
+            logger.error({ err, cacheKey }, 'Redis cache set error for price forecast');
+        }
+    }
+
+    return result;
 }
 
 /**
