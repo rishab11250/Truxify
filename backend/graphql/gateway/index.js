@@ -1,4 +1,5 @@
-import { ApolloGateway } from '@apollo/gateway';
+import { ApolloGateway, IntrospectAndCompose } from '@apollo/gateway';
+import { RemoteGraphQLDataSource } from '@apollo/gateway';
 import { ApolloServer } from '@apollo/server';
 import { startStandaloneServer } from '@apollo/server/standalone';
 import { InMemoryLRUCache } from '@apollo/utils.keyvaluecache';
@@ -33,18 +34,12 @@ class GraphQLGateway {
                 ttl: 300 // 5 minutes
             }),
             buildService({ name, url }) {
-                return {
-                    name,
+                return new RemoteGraphQLDataSource({
                     url,
-                    requestDidStart() {
-                        return {
-                            willSendResponse({ response }) {
-                                // Log response
-                                logger.debug(`GraphQL ${name} response sent`);
-                            }
-                        };
-                    }
-                };
+                    willSendRequest({ request }) {
+                        logger.debug(`GraphQL ${name} request sent`);
+                    },
+                });
             }
         });
     }
