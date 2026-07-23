@@ -33,6 +33,7 @@ class FraudDetectionService {
   // ============ Behavioral Fingerprinting ============
   async trackBehavior(userId, eventData) {
     try {
+      if (!supabase) return null;
       const profile = await this.getOrCreateProfile(userId);
       
       // Update behavioral metrics
@@ -99,6 +100,7 @@ class FraudDetectionService {
   }
 
   async getOrCreateProfile(userId) {
+    if (!supabase) return null;
     // Check Redis cache
     const cached = this.redis ? await this.redis.get(`behavior:${userId}`) : null;
     if (cached) {
@@ -282,6 +284,7 @@ class FraudDetectionService {
   }
 
   async getUserConnections(userId) {
+    if (!supabase) return [];
     // Get all connections (orders, trips, shared routes)
     const { data: orders, error } = await supabase
       .from('orders')
@@ -551,6 +554,7 @@ class FraudDetectionService {
 
   async storeRiskScore(userId, score, components) {
     try {
+      if (!supabase) return;
       await supabase
         .from('fraud_risk_scores')
         .insert([{
@@ -584,6 +588,7 @@ class FraudDetectionService {
   // ============ Auto-Review Queue ============
   async addToReviewQueue(userId, reason, riskScore) {
     try {
+      if (!supabase) return null;
       const { data } = await supabase
         .from('fraud_review_queue')
         .insert([{
@@ -605,6 +610,7 @@ class FraudDetectionService {
   }
 
   async getReviewQueue(limit = 50) {
+    if (!supabase) return [];
     const { data } = await supabase
       .from('fraud_review_queue')
       .select('*')
@@ -616,6 +622,7 @@ class FraudDetectionService {
   }
 
   async resolveReview(reviewId, action, notes) {
+    if (!supabase) return null;
     const { data } = await supabase
       .from('fraud_review_queue')
       .update({
@@ -645,6 +652,7 @@ class FraudDetectionService {
   }
 
   async getFraudStats() {
+    if (!supabase) return { total: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, avgScore: 0 };
     const { data: scores } = await supabase
       .from('fraud_risk_scores')
       .select('risk_score, created_at')
