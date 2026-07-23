@@ -356,6 +356,8 @@ app.use(networkAnalysisMiddleware)
 // ============================================================================
 app.use('/api/health', healthLimiter)
 app.use('/api/health', healthRoutes)
+app.use('/api/v1/health', healthLimiter)
+app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
 app.use('/api/v1/trips', tripRoutes)
 
