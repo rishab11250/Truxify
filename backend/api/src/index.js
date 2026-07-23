@@ -16,6 +16,11 @@ import { initLocationServer, closeLocationServer } from './sockets/locationServe
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
 import { validateEscrowSetup } from './services/escrow.js'
 
+import {
+  requestIdMiddleware,
+  securityHeaders,
+} from "./middleware/index.js";
+
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
 import driverRoutes from './routes/driverRoutes.js'
