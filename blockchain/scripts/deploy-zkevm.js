@@ -43,10 +43,11 @@ async function main() {
     console.log(`💰 Balance: ${ethers.formatEther(balance)} ETH`);
 
     // Execute transaction
-    const txData = ethers.solidityPacked(
-        ["address", "address", "uint256", "bytes", "uint256", "uint256", "uint256", "bytes"],
-        [signer.address, signer.address, 0, "0x", 0, 0, 21000, "0x"]
+    const txHash = ethers.solidityPackedKeccak256(
+        ["address", "address", "uint256", "bytes", "uint256", "uint256", "uint256"],
+        [signer.address, signer.address, 0, "0x", 0, 0, 21000]
     );
+    const signature = await signer.signMessage(ethers.getBytes(txHash));
 
     const tx = await rollup.executeTransaction(
         signer.address,
@@ -56,7 +57,7 @@ async function main() {
         0,
         0,
         21000,
-        "0x"
+        signature
     );
     await tx.wait();
     console.log("✅ Transaction executed");
