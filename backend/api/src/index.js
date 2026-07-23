@@ -19,6 +19,11 @@ import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } fro
 import { validateEscrowSetup } from './services/escrow.js'
 import { startDlqWorker } from './workers/dlqWorker.js'
 
+import {
+  requestIdMiddleware,
+  securityHeaders,
+} from "./middleware/index.js";
+
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
 import driverRoutes from './routes/driverRoutes.js'
